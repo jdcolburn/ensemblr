@@ -167,6 +167,7 @@ def mc_path_optimisation(seed):
             
     # get the path with the lowest energy
     final_energy = min(path_energies.keys())
+    
     final_path = path_energies[final_energy]
     final_path_structures = tuple(ensemble_df.loc[final_path]['structure'].values)
     relaxation_energies = list(path_energies.keys())

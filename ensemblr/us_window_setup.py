@@ -1,58 +1,49 @@
 # set up umbrella sampling windows (for REUS)
 from MDAnalysis.analysis import align, rms
 import shutil
-from difflib import SequenceMatcher
 
-def write_pca_ref_pdb():
+def selection_parser(mda_selection):
 
-    # write a file like pca1.pdb but with "REMARK TYPE=OPTIMAL" after each ENDMDL line
-    # edit this file to add "REMARK TYPE=OPTIMAL" after each ENDMDL line
-    with open(umbrella_sampling_directory + 'pca_ref.pdb', 'r') as file :
-        filedata = file.read()
-    # Replace the target string
-    filedata = filedata.replace('ENDMDL', 'ENDMDL\nREMARK TYPE=OPTIMAL')
-    # Write the file out again
-    with open(umbrella_sampling_directory + 'pca_ref.pdb', 'w') as file:
-        file.write(filedata)
+    """
+    Turns an MDA selection token into a safe list of atom IDs to pass to PLUMED
+    because MOLINFO may or may not work depending on what python interpreter
+    is available at runtime.
 
-# function to calculate the similarity between two strings
-def similar(a, b):
-    return SequenceMatcher(None, a, b).ratio()
+    Parameters
+    ----------
+    mda_selection : string, Required, default: None
+        MDA selection token to parse.
 
-# this should be a pdb from e.g. an unbiased simulation you've run before
-# containing everything in the simualtion box, protein, lipids, water etc. 
-# if you have a working topolgy for this system, you can re-use it here
-template_pdb_for_umbrella_sampling = (base_directory + 'template.pdb')
+    Returns
+    -------
+    selection_string : string
+        List of atomIDs matching the token.
+    """
 
-# make a universe from this template
-u_template = mda.Universe(template_pdb_for_umbrella_sampling, template_pdb_for_umbrella_sampling)
+    selection_string = ''
+    for i in u_template.select_atoms(mda_selection).atoms.ids:
+        selection_string += str(i) + ','
+    selection_string = selection_string[:-1]
+    return selection_string
 
-# sort out your collective variable, for later inclusion in the
-# automatically generated plumed input file
-print('collective variable is:', collective_variable, '\n')
-if collective_variable == 'cyto_helix_bundle_separation':
-    com1 = cyto_helix_bundle_1
-    com2 = cyto_helix_bundle_2
-    pcavar = False
-elif collective_variable == 'lumen_helix_bundle_separation':
-    com1 = lumen_helix_bundle_1
-    com2 = lumen_helix_bundle_2
-    pcavar = False
-elif collective_variable == 'PC1':
-    com1 = None
-    com2 = None
-    pcavar = True
-    write_pca_ref_pdb()
-    pca_ref_pdb = umbrella_sampling_directory + 'pca_ref.pdb'
-else:
-    print('I dont know what your collective variable is supposed to be, sort this out yourself (thinking emoji)')
-    com1 = '{your atoms here}'
-    com2 = '{your atoms here}'
-    pcavar = False
-
-
-# aligns mobile universe to first frame of reference universe
 def align_universe(mobile, ref):
+
+    """
+    aligns mobile universe to the first frame of the reference universe
+
+    Parameters
+    ----------
+    mobile : MDAnalysis universe object, Required, default: None
+        MDA universe to superimpose onto ref.
+    ref : MDAnalysis universe object, Required, default: None
+        Reference MDA universe
+
+    Returns
+    -------
+    mobile : MDAnalysis universe object
+        Modified MDA universe. Not strictly required since the universe object is modified in-place.
+    """
+
     alignment_selection = 'protein and name CA'
     mobile.trajectory[-1]  # set mobile trajectory to last frame
     ref.trajectory[0]  # set reference trajectory to first frame
@@ -69,11 +60,29 @@ def align_universe(mobile, ref):
                               in_memory=True).run()
     return mobile
 
-# replace the protein coordinates in your template with those from a structure in the ensemble
 def protein_coordinate_replacer(u_structure, u_template):
+
+    """
+    Hacky way to replace protein coordinates in a template with those from another pdb structure (e.g. a structure from the AF ensemble).
+    These must match, if there are mismatchign atoms some coordinates will not be updated. Also clashes will likely be introduced.
+
+    Parameters
+    ----------
+    u_structure : MDAnalysis universe object, Required, default: None
+        Universe containing a structure to "insert" into the template universe.
+    u_template : MDAnalysis universe object, Required, default: None
+        Template universe in which to substitute the coordinates from u_structure.
+
+    Returns
+    -------
+    u_template.atoms.positions : list
+        Not important becauase the universe is modified in-place.
+    """
 
     # dictionary of name matches for charmm36 (and I assume amber)
     # key is the name in the template universe, value is the name in the structure universe
+    # these are used to infer which atoms are which when there are differences introduced by 
+    # post-processing/embedding.
     name_mismatches = {
     'ALA HN'   : 'H',
     'ARG HB1'  : 'HB2',
@@ -156,7 +165,6 @@ def protein_coordinate_replacer(u_structure, u_template):
     'VAL HN'  : 'H',
     }
 
-
     error_counter = 0
     error_type_list = []
 
@@ -202,7 +210,9 @@ def protein_coordinate_replacer(u_structure, u_template):
 
                 pass
                 #print('no atom in resid', atom.resid, atom.resname, 'with name: ', atom.name, 'found')
-            
+
+                # some sort of heuristic to guess mismatching atom positions goes here...
+
                 #    # get the average position of the atoms in the structure universe with the same resid
                 #    incomplete_resid_average_position_structure = np.mean(u_structure.atoms[u_structure.atoms.resids == atom.resid].positions, axis=0)
                 #    # get the average position of the atoms in the template universe with the same resid
@@ -220,35 +230,84 @@ def protein_coordinate_replacer(u_structure, u_template):
     display(set(error_type_list))
     return u_template.atoms.positions # not important becauase the universe is modified in place, just return something
 
-# turns your mda selection token into a safe list of atom IDs to pass to PLUMED
-# because MOLINFO may or may not work depending on what python interpreter
-# you have available at runtime
-def selection_parser(mda_selection):
-    selection_string = ''
-    for i in u_template.select_atoms(mda_selection).atoms.ids:
-        selection_string += str(i) + ','
-    selection_string = selection_string[:-1]
-    return selection_string
+def write_pca_ref_pdb(pca_reference='pca1.pdb', output_file='pca_ref.pdb'):
 
-# write a plumed input file for REUS, if your CV is not a distance then
-# you will need to modify this script appropriately
-def plumed_input_writer(window_values, plumed_file, force_constant=1000):
+    """
+    Wries a template PDB file for use in the PLUMED script.
+    This consists of two coordinate sets separated by "ENDMDL"
+    and "REMARK TYPE=OPTIONAL"
 
-    # convert window values to nm (from Angstrom)
-    window_values = window_values / 10
+    Actually this file must have identical atom numbering to the template pdb
+    so i have to fix this function to make sure that is always the case
 
-    with open(plumed_file, 'w') as f:
-        f.write('MOLINFO STRUCTURE=%s \n\n' % template_pdb_for_umbrella_sampling) #window_0/window_0.pdb
-        if pcavar == True:
-            f.write('CV: PCAVARS REFERENCE=%s TYPE=OPTIMAL\n\n' % pca_ref_pdb) #{@mda:{}}
+    Parameters
+    ----------
+    pca_reference : string, Optional, default: 'pca1.pdb'
+        PDB file containing structures projected onto the PC of interest.
+
+    Returns
+    -------
+    None 
+        
+    """
+
+    with open(umbrella_sampling_directory + pca_reference, 'r') as file :
+        filedata = file.read()
+
+    # here the function should do something to only write out lines 
+    # that have atomIDs + resIDs etc. that match those in the MDA selection used for PCA (rmsd_selection) 
+    # this way the atomIDs will be consistent with those in the template / i.e. not reindexed
+    # however, it may be the case that the pca_reference files (e.g. pca1.pdb) written out earlier in the notebook
+    # have atomIDs that are already renumbered - so may need a different strategy
+
+    filedata = filedata.replace('ENDMDL', 'ENDMDL\nREMARK TYPE=OPTIMAL')
+
+    with open(umbrella_sampling_directory + output_file, 'w') as file:
+        file.write(filedata)
+
+def plumed_input_writer(window_values, output_file='plumed.dat', force_constant=1000, cv_reference_pdb=None):
+
+    """
+    Write a plumed input file for use in umbrella sampling, with appropriate restraint values, etc. 
+
+    Parameters
+    ----------
+    window_values : list, Required, default: None
+        list of restraint values in the CV space.
+    output_file : string, Optional, default: 'plumed.dat'
+        filename of output PLUMED file.
+    force_constant : float, Optional, default: 1000
+        Force consant for harmonic restraints in whatever units plumed uses by default kJ / nm ^ 2
+    cv_reference_pdb : string, Optional, default: None
+        PDB file used by PLUMED defining the linear subspace / PC projection
+
+    Returns
+    -------
+    None 
+        
+    """
+    
+    # Flag to indicate when CV is a PC/subspace projection or anything else with arbitrary units
+    # assume this is NOT the case if no reference pdb provided
+    if cv_ref_pdb != None:
+        pca_cv = True
+    else:
+        pca_cv = False
+
+    if pca_cv = False:
+        window_values = window_values / 10 # convert window values to nm (from Angstrom)
+
+    with open(output_file, 'w') as f:
+        f.write('MOLINFO STRUCTURE=%s \n\n' % template_pdb_for_umbrella_sampling)
+        if pca_cv == True:
+            f.write('CV: PCAVARS REFERENCE=%s TYPE=OPTIMAL\n\n' % cv_reference_pdb)
         else:
-            f.write('com1: CENTER ATOMS=%s \n' % selection_parser(com1)) #{@mda:{}}
-            f.write('com2: CENTER ATOMS=%s \n' % selection_parser(com2)) #{@mda:{}}
+            f.write('com1: CENTER ATOMS=%s \n' % selection_parser(com1))
+            f.write('com2: CENTER ATOMS=%s \n' % selection_parser(com2))
             f.write('\n')
             f.write('CV: DISTANCE ATOMS=com1,com2 \n\n')
         f.write('umbrella_restraint: RESTRAINT ARG=CV KAPPA=%s AT=@replicas:' % force_constant)
         for i in window_values:
-            # should be no comma after the last value
             if i == window_values[-1]:
                 f.write(str(i.round(4)) + '\n')
             else:
@@ -256,8 +315,40 @@ def plumed_input_writer(window_values, plumed_file, force_constant=1000):
         f.write('\nPRINT ARG=CV,umbrella_restraint.* FILE=COLVAR_MULTI\n')
         f.write('\n')
 
-# prepare directories for each window
+
+
+# this should be a pdb from e.g. an unbiased simulation you've run before
+# containing everything in the simualtion box, protein, lipids, water etc. 
+# if you have a working topolgy for this system, you can re-use it here
+template_pdb_for_umbrella_sampling = (base_directory + 'template.pdb')
+u_template = mda.Universe(template_pdb_for_umbrella_sampling, template_pdb_for_umbrella_sampling)
 umbrella_sampling_directory = base_directory + 'umbrella_sampling/'
+
+# sort out your collective variable, for later inclusion in the
+# automatically generated plumed input file
+print('collective variable is:', collective_variable, '\n')
+if collective_variable == 'cyto_helix_bundle_separation':
+    com1 = cyto_helix_bundle_1
+    com2 = cyto_helix_bundle_2
+    pca_cv = False
+elif collective_variable == 'lumen_helix_bundle_separation':
+    com1 = lumen_helix_bundle_1
+    com2 = lumen_helix_bundle_2
+    pca_cv = False
+elif collective_variable == 'PC1':
+    com1 = None
+    com2 = None
+    pca_cv = True
+    write_pca_ref_pdb()
+    pca_ref_pdb = umbrella_sampling_directory + 'pca_ref.pdb'
+else:
+    print('I dont know what your collective variable is supposed to be, sort this out yourself (thinking emoji)')
+    com1 = '{your atoms here}'
+    com2 = '{your atoms here}'
+    pca_cv = False
+
+# prepare directories for each window
+
 window_directories = []
 for i in range(mc_n_bins):
     window_directories.append(umbrella_sampling_directory + 'window_' + str(i))
@@ -283,4 +374,4 @@ for i in range(mc_n_bins):
     u.atoms.write(window_directories[i] + '/window_' + str(i) + '.pdb')
 
 # write out the plumed input file
-plumed_input_writer(ideal_window_values, umbrella_sampling_directory + '/plumed.dat')
+plumed_input_writer(ideal_window_values, output_file = umbrella_sampling_directory + '/plumed.dat')
