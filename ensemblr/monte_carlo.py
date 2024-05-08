@@ -1,7 +1,24 @@
-# MC path finding by exchanging structures within bins
+"""MC path finding by exchanging structures within bins."""
+
+import os
+import warnings
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import MDAnalysis as mda
+import seaborn as sns
+import nglview as nv                            # for visualisation
+from MDAnalysis.analysis.align import alignto   # for aligning structures
+from MDAnalysis.analysis.pca import PCA         # for PCA
+from Bio.PDB import PDBParser
+from Bio.PDB.DSSP import DSSP                   # for secondary structure selection
+from Bio.PDB.SASA import ShrakeRupley           # for SASA calculation
+from IPython.display import display             # for data frame display
+from multiprocessing import Pool                # for multiprocessing
+from tqdm import tqdm                           # for progress bars
 
 # function to calculate the energy of a given path 
-def calc_energy(path, path_length, wf_rmsd=1, wf_cv=1):
+def calc_energy(path, rmsd_matrix, cv_matrix, dataframe, wf_rmsd=1, wf_cv=1):
 
     """
     Function to calculate the "energy" of a path. Currently hardcoded to work with the ensemble dataframe.
@@ -15,9 +32,17 @@ def calc_energy(path, path_length, wf_rmsd=1, wf_cv=1):
     Parameters
     ----------
     path : list, Required, default: None
-        A list of dataframe indices corresponding to structures in ensemble_df.
+        A list of dataframe indices corresponding to structures in dataframe.
+
     path_length : int, Required, default: None
         The total number of windows in the path. This should be deprecated later because it will (always?) correspond to the number of elements in path.
+
+    rmsd_matrix : numpy array, Required, default: None
+        The RMSD matrix for the ensemble.
+    cv_matrix : numpy array, Required, default: None
+        The CV matrix for the ensemble.
+    dataframe : pandas dataframe, Required, default: None
+        The pandas dataframe with all the structures in the ensemble.
     wf_rmsd : float, Optional, default: 1
         Coefficient for the rmsd part of the energy expression. Set to zero for a path with random smoothness, or to -1 for a maximally "unsmooth" path.
     wf_cv : float, Optional, default: 1
@@ -29,14 +54,16 @@ def calc_energy(path, path_length, wf_rmsd=1, wf_cv=1):
         The total energy of the path.
     """
 
+    path_length = len(path)
+
     energy_rmsd = 0
     for i in range(path_length - 1):
-        energy_rmsd += (rmsd_matrix[np.where(ensemble_df.index.values == path[i])[0][0], np.where(ensemble_df.index.values == path[i+1])[0][0]]**2)
+        energy_rmsd += (rmsd_matrix[np.where(dataframe.index.values == path[i])[0][0], np.where(dataframe.index.values == path[i+1])[0][0]]**2)
     energy_rmsd = wf_rmsd * np.sqrt ( 1/path_length * energy_rmsd )
 
     energy_cv = 0
     for i in range(path_length -1):
-        energy_cv += (cv_matrix[np.where(ensemble_df.index.values == path[i])[0][0], np.where(ensemble_df.index.values == path[i+1])[0][0]]**2)
+        energy_cv += (cv_matrix[np.where(dataframe.index.values == path[i])[0][0], np.where(dataframe.index.values == path[i+1])[0][0]]**2)
     energy_cv = wf_cv * np.sqrt ( 1/path_length * energy_cv )
 
     total_energy = 0
@@ -45,7 +72,7 @@ def calc_energy(path, path_length, wf_rmsd=1, wf_cv=1):
     return total_energy
 
 # define a function that runs monte carlo simulated annealing to optimise smoothness
-def mc_path_optimisation(seed):
+def mc_path_optimisation(seed, initial_guess_indices, rmsd_matrix, cv_matrix, dataframe, fixed_endpoints=True, mc_n_steps=1000, initial_temperature=0.01, cooling_factor=10000):
 
     """
     Function to select the optimal set of N structures for a path of length N between two endpoints. Currently hardcoded to work with the ensemble dataframe.
@@ -54,6 +81,8 @@ def mc_path_optimisation(seed):
     ----------
     seed : float, Required, default: None
         Seed for the random draws.
+    initial_guess_indices : list, Required, default: None
+        A list of dataframe indices corresponding to structures in dataframe.
     fixed_endpoints : Bool, Optional, default: True
         Whether or not the endpoints will be optimised. Set to False if you want to keep the end states structures consistent.
     mc_n_steps : int, Optional, default: 1000
@@ -88,12 +117,12 @@ def mc_path_optimisation(seed):
     final_temperature = initial_temperature/cooling_factor
     temperatures = np.logspace(np.log10(initial_temperature), np.log10(final_temperature), num=mc_n_steps)
 
-    mc_path_length = mc_n_bins
+    #mc_path_length = mc_n_bins
 
     mcpath = []
 
-    initial_guess_indices = []
-    initial_guess_indices = ideal_initial_path
+    #initial_guess_indices = []
+    #initial_guess_indices = ideal_initial_path
 
     mcpath = initial_guess_indices
 
@@ -107,7 +136,7 @@ def mc_path_optimisation(seed):
 
         # calculate energy of the initial path
         energy = 0
-        energy = calc_energy(mcpath, mc_path_length)
+        energy = calc_energy(path=mcpath, rmsd_matrix=rmsd_matrix, cv_matrix=cv_matrix, dataframe=dataframe)
         
         # propose an exchange of a random structure in the path with a random structure from the pool
         new_mcpath = mcpath.copy()
@@ -127,18 +156,18 @@ def mc_path_optimisation(seed):
             structure_in_path = mcpath[point]
 
             # select a random structure in the same bin as the structure in the path
-            random_structure_in_pool = np.random.choice(ensemble_df[ensemble_df['bin'] == ensemble_df.loc[structure_in_path]['bin']].index.values)
+            random_structure_in_pool = np.random.choice(dataframe[dataframe['bin'] == dataframe.loc[structure_in_path]['bin']].index.values)
 
             # replace the random structure in the new path with the random structure from the pool
             new_mcpath[np.where(new_mcpath == structure_in_path)[0][0]] = random_structure_in_pool
 
             # calculate the energy of the original path
             energy = 0
-            energy = calc_energy(mcpath, mc_path_length)
+            energy = calc_energy(mcpath, rmsd_matrix=rmsd_matrix, cv_matrix=cv_matrix, dataframe=dataframe)
 
             # calcualte energy of proposed path
             new_energy = 0
-            new_energy = calc_energy(new_mcpath, mc_path_length)
+            new_energy = calc_energy(path=new_mcpath, rmsd_matrix=rmsd_matrix, cv_matrix=cv_matrix, dataframe=dataframe)
 
             # calculate the difference between the two energies
             delta_energy = 0
@@ -169,7 +198,7 @@ def mc_path_optimisation(seed):
     final_energy = min(path_energies.keys())
     
     final_path = path_energies[final_energy]
-    final_path_structures = tuple(ensemble_df.loc[final_path]['structure'].values)
+    final_path_structures = tuple(dataframe.loc[final_path]['structure'].values)
     relaxation_energies = list(path_energies.keys())
 
     return [final_energy, final_path, final_path_structures, relaxation_energies]

@@ -1,4 +1,17 @@
-# automatic "clever" selection definer
+"""automatic "clever" selection definer."""
+
+import os
+import warnings
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import MDAnalysis as mda
+import seaborn as sns
+import nglview as nv                            # for visualisation
+from MDAnalysis.analysis.align import alignto   # for aligning structures
+from MDAnalysis.analysis.pca import PCA         # for PCA
+from Bio.PDB import PDBParser
+from Bio.PDB.DSSP import DSSP                   # for secondary structure selection
 
 def generate_selection_token(reference_pdb_file, conserved_residues=None, excluded_residues=None):
 
@@ -8,6 +21,8 @@ def generate_selection_token(reference_pdb_file, conserved_residues=None, exclud
     Uses DSSP to get secondary structure information from a pdb file. Resulting token only includes residues that are part of secondary structure elements. 
     
     Also, anything matching conserved_residues will have certain (CG/CZ) sidechain atoms included.
+
+    Currently doesnt work if you dont pass both optional arguments
 
     Parameters
     ----------
@@ -23,6 +38,12 @@ def generate_selection_token(reference_pdb_file, conserved_residues=None, exclud
     rmsd_selection : string
         The resulting MDA selection token.
     """
+
+    # defaults
+    #if conserved_residues is None:
+    #    conserved_residues = ''
+    #if excluded_residues is None:
+    #    excluded_residues = ''
 
     # identify regions of secondary structure
     p = PDBParser()
@@ -89,7 +110,8 @@ def generate_selection_token(reference_pdb_file, conserved_residues=None, exclud
         selection_loops.append('(resid %s-%s)' % (loops_contiguous[i][0], loops_contiguous[i][-1]))
 
     # conserved residues
-    selection_conserved_residues = '((' + conserved_residues + ') and (name CA or name CG or name CZ* or name NZ))' 
+    if conserved_residues != None:
+        selection_conserved_residues = '((' + conserved_residues + ') and (name CA or name CG or name CZ* or name NZ))' 
 
     # format selections
     selection_helices = ','.join(selection_helices)
@@ -99,28 +121,31 @@ def generate_selection_token(reference_pdb_file, conserved_residues=None, exclud
     selection_loops = ','.join(selection_loops)
     selection_loops = selection_loops.replace(',', ' or ')
 
-    endstates = {}
-
-    resids_from_ca_dist_diffmat = []
-
-    ## get the resid of the residues that differ by more than the threshold in absolute terms
-    #above_thresh = np.where(abs(ca_dist_difference_matrix) >= diffmat_thresh)
-    #for i in range(len(above_thresh[0])):
-    #    resids_from_ca_dist_diffmat.append(u.atoms[above_thresh[0][i]].resid)
-    #resids_from_ca_dist_diffmat = list(set(resids_from_ca_dist_diffmat))    # get unique residues
-
-    # make a selection token for these residues
-    selection_from_ca_dist_diffmat = []
-    for i in range(len(resids_from_ca_dist_diffmat)):
-        selection_from_ca_dist_diffmat.append('resid %s' % resids_from_ca_dist_diffmat[i])
-    selection_from_ca_dist_diffmat = ','.join(selection_from_ca_dist_diffmat)
-    selection_from_ca_dist_diffmat = selection_from_ca_dist_diffmat.replace(',', ' or ')
+    ### deprecated block of code to use information for a difference matrix 
+    ### to filter for residues that differ more between two target structures
+    
+        #endstates = {}
+        #
+        #resids_from_ca_dist_diffmat = []
+        #
+        ## get the resid of the residues that differ by more than the threshold in absolute terms
+        #above_thresh = np.where(abs(ca_dist_difference_matrix) >= diffmat_thresh)
+        #for i in range(len(above_thresh[0])):
+        #    resids_from_ca_dist_diffmat.append(u.atoms[above_thresh[0][i]].resid)
+        #resids_from_ca_dist_diffmat = list(set(resids_from_ca_dist_diffmat))    # get unique residues
+        #
+        ## make a selection token for these residues
+        #selection_from_ca_dist_diffmat = []
+        #for i in range(len(resids_from_ca_dist_diffmat)):
+        #    selection_from_ca_dist_diffmat.append('resid %s' % resids_from_ca_dist_diffmat[i])
+        #selection_from_ca_dist_diffmat = ','.join(selection_from_ca_dist_diffmat)
+        #selection_from_ca_dist_diffmat = selection_from_ca_dist_diffmat.replace(',', ' or ')
 
     # final rmsd_selection for analysis
     rmsd_selection = '( ( (' + selection_helices + ') and name CA ) or ( (' + selection_loops + ') and name CA ) )' # or' + selection_conserved_residues #+ ' and not (resid 116-120 or resid 356-367)'
-    if conserved_residues != "":
+    if conserved_residues != None:
         rmsd_selection += ' or ( (' + selection_helices + ') and' + selection_conserved_residues + ')'
-    if excluded_residues != "":
+    if excluded_residues != None:
         rmsd_selection += ' and not (' + excluded_residues + ')'
 
-return(rmsd_selection)
+    return(rmsd_selection)

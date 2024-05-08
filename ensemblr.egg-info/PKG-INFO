@@ -1,0 +1,32 @@
+Metadata-Version: 2.1
+Name: ensemblr
+Version: 1.0.0+17.gd0d4f94.dirty
+Summary: Tools for analysing AF2 ensembles
+Author-email: Jonathan Colburn <jonathan.colburn@bioch.ox.ac.uk>
+License: MIT
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Programming Language :: Python :: 3
+Requires-Python: >=3.8
+Description-Content-Type: text/markdown
+License-File: LICENSE
+Provides-Extra: test
+Requires-Dist: pytest>=6.1.2; extra == "test"
+
+ensemblr
+==============================
+[//]: # (Badges)
+[![GitHub Actions Build Status](https://github.com/REPLACE_WITH_OWNER_ACCOUNT/ensemblr/workflows/CI/badge.svg)](https://github.com/REPLACE_WITH_OWNER_ACCOUNT/ensemblr/actions?query=workflow%3ACI)
+[![codecov](https://codecov.io/gh/REPLACE_WITH_OWNER_ACCOUNT/ensemblr/branch/main/graph/badge.svg)](https://codecov.io/gh/REPLACE_WITH_OWNER_ACCOUNT/ensemblr/branch/main)
+
+
+Tools for analysing AF2 ensembles
+
+### Copyright
+
+Copyright (c) 2024, Jonathan Colburn
+
+
+#### Acknowledgements
+ 
+Project based on the 
+[Computational Molecular Science Python Cookiecutter](https://github.com/molssi/cookiecutter-cms) version 1.1.
