@@ -76,6 +76,8 @@ def mc_path_optimisation(seed, initial_guess_indices, rmsd_matrix, cv_matrix, da
 
     """
     Function to select the optimal set of N structures for a path of length N between two endpoints. Currently hardcoded to work with the ensemble dataframe.
+    
+    Works by exchanging structures within bins (as indicated in the dataframe)
 
     Parameters
     ----------
