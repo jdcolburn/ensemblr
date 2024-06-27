@@ -143,11 +143,11 @@ def generate_selection_token(reference_pdb_file, conserved_residues=None, exclud
 
     # final rmsd_selection for analysis
     rmsd_selection = '( ( (' + selection_helices + ') and name CA ) or ( (' + selection_loops + ') and name CA ) )' # or' + selection_conserved_residues #+ ' and not (resid 116-120 or resid 356-367)'
-    if conserved_residues != None:
+    if conserved_residues != None and conserved_residues != '':
         rmsd_selection += ' or ( (' + selection_helices + ') and' + selection_conserved_residues + ')'
-    if excluded_residues != None:
+    if excluded_residues != None and excluded_residues != '':
         rmsd_selection += ' and not (' + excluded_residues + ')'
-    if explicitly_include != None:
+    if explicitly_include != None and explicitly_include != '':
         rmsd_selection += ' or ((' + explicitly_include + ') and name CA )'
 
     return(rmsd_selection)
