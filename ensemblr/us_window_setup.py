@@ -30,7 +30,7 @@ def selection_parser(mda_selection):
     selection_string = selection_string[:-1]
     return selection_string
 
-def align_universe(mobile, ref):
+def align_universe(mobile, ref, selection='protein and name CA'):
 
     """
     aligns mobile universe to the first frame of the reference universe
@@ -48,27 +48,29 @@ def align_universe(mobile, ref):
         Modified MDA universe. Not strictly required since the universe object is modified in-place.
     """
 
-    alignment_selection = 'protein and name CA'
+    #alignment_selection = 'protein and name CA'
     mobile.trajectory[-1]  # set mobile trajectory to last frame
     ref.trajectory[0]  # set reference trajectory to first frame
-    mobile_ca = mobile.select_atoms(alignment_selection)
-    ref_ca = ref.select_atoms(alignment_selection)
+    mobile_ca = mobile.select_atoms(selection)
+    ref_ca = ref.select_atoms(selection)
     rms.rmsd(
              mobile_ca.positions, 
              ref_ca.positions, 
-             superposition=False
+             superposition=False,
              )
     aligner = align.AlignTraj(mobile, 
                               ref, 
-                              select=alignment_selection,
+                              select=selection,
                               in_memory=True).run()
     return mobile
 
-def protein_coordinate_replacer(u_structure, u_template):
+def protein_coordinate_replacer(u_structure, u_template, resid_offset=0, selection_token='protein'):
 
     """
     Hacky way to replace protein coordinates in a template with those from another pdb structure (e.g. a structure from the AF ensemble).
     These must match, if there are mismatchign atoms some coordinates will not be updated. Also clashes will likely be introduced.
+
+    Modifies the template universe in place.
 
     Parameters
     ----------
@@ -179,7 +181,7 @@ def protein_coordinate_replacer(u_structure, u_template):
     modified_atoms = []
 
     # loop though each atom in the template universe matching the atom name and residue ID to the atom in the template universe
-    for atom in u_template.select_atoms('protein').atoms:
+    for atom in u_template.select_atoms(selection_token).atoms:
 
         atom_name_template = atom.name
 
@@ -201,7 +203,7 @@ def protein_coordinate_replacer(u_structure, u_template):
             modified_atoms.append((str(atom.resid) + str(atom.name)))
 
         else:
-            print('ERROR: with: ', atom.name, atom.resname)
+            #print('ERROR: with: ', atom.name, atom.resname)
 
             # add this to a list of resname atom name pairs that are not found in the structure universe
             error_type_list.append((atom.resname, atom.name))
@@ -229,25 +231,19 @@ def protein_coordinate_replacer(u_structure, u_template):
             else:
                 print('ERROR: resid not found in structure universe: ', atom.resid)
 
-    print('number of atoms not found in structure universe: ', error_counter)
+    #print('number of atoms not found in structure universe: ', error_counter)
     # print unique error types in the list
-    display(set(error_type_list))
+    #display(set(error_type_list))
     return u_template.atoms.positions # not important becauase the universe is modified in place, just return something
 
-def write_pca_ref_pdb(pca_reference='pca1.pdb', output_file='pca_ref.pdb'):
+def write_pca_ref_pdb_typeoptimal(u_structure, u_template, eigenvector, pca_selection_token, output_file='pca_ref.pdb'):#pca_reference='pca1.pdb', output_file='pca_ref.pdb'):
 
     """
-    Wries a template PDB file for use in the PLUMED script.
-    This consists of two coordinate sets separated by "ENDMDL"
-    and "REMARK TYPE=OPTIONAL"
-
-    Actually this file must have identical atom numbering to the template pdb
-    so i have to fix this function to make sure that is always the case
+    Wries a template PDB file for use in the PLUMED script. 
 
     Parameters
     ----------
-    pca_reference : string, Optional, default: 'pca1.pdb'
-        PDB file containing structures projected onto the PC of interest.
+    Some
 
     Returns
     -------
@@ -255,21 +251,105 @@ def write_pca_ref_pdb(pca_reference='pca1.pdb', output_file='pca_ref.pdb'):
         
     """
 
-    with open(umbrella_sampling_directory + pca_reference, 'r') as file :
-        filedata = file.read()
+    list_of_atom_ids_in_template = []
 
-    # here the function should do something to only write out lines 
-    # that have atomIDs + resIDs etc. that match those in the MDA selection used for PCA (rmsd_selection) 
-    # this way the atomIDs will be consistent with those in the template / i.e. not reindexed
-    # however, it may be the case that the pca_reference files (e.g. pca1.pdb) written out earlier in the notebook
-    # have atomIDs that are already renumbered - so may need a different strategy
+    # loop though atoms matchign the selection in the template universe and get their ids (not their indices) and make these into a list
+    for atom in u_template.select_atoms(pca_selection_token).atoms:
+        list_of_atom_ids_in_template.append(atom.id)
 
-    filedata = filedata.replace('ENDMDL', 'ENDMDL\nREMARK TYPE=OPTIMAL')
+    # print the length of the list
+    print('Number of atoms in the template universe: ', len(list_of_atom_ids_in_template))
+    #  check that this matches the length of the selection in the structure (ensemble) universe
+    print('Number of atoms in the ensemble universe: ', len(u_structure.select_atoms(pca_selection_token).atoms))
 
-    with open(umbrella_sampling_directory + output_file, 'w') as file:
-        file.write(filedata)
+    # if these dont match print an error
+    if len(list_of_atom_ids_in_template) != len(u_structure.select_atoms(pca_selection_token).atoms):
+        print('ERROR: Number of atoms in the template universe does not match the number of atoms in the ensemble universe\n so theres no guarantee the IDs correspond to the same atoms\n')
 
-def plumed_input_writer(window_values, output_file='plumed.dat', force_constant=1000, cv_reference_pdb=None):
+    # write out the selection matching pca_selection_token while PRESERVING ATOM IDS from the template (i.e. not renumbered)
+    # this is important because the atom IDs in the PCA reference file must match those in the template
+
+    pca_selection = u_structure.select_atoms(pca_selection_token)
+
+    with open(output_file, 'w') as f:
+        i = 0
+        f.write('REMARK TYPE=OPTIMAL\n')
+        for atom in pca_selection.atoms:
+            f.write('ATOM  %5d %4s %3s %5d    %8.3f%8.3f%8.3f  1.00  1.00           %2s\n' % (list_of_atom_ids_in_template[i], atom.name, atom.resname, atom.resid, atom.position[0], atom.position[1], atom.position[2], atom.element))
+            i += 1
+        f.write('END\nREMARK TYPE=OPTIMAL\n')
+
+    # now add the eigenvector to the file
+    with open(output_file, 'a') as f:
+        i = 0
+        for atom in pca_selection.atoms:
+            f.write('ATOM  %5d %4s %3s %5d    %8.3f%8.3f%8.3f  1.00  0.00           %2s\n' % (list_of_atom_ids_in_template[i], atom.name, atom.resname, atom.resid, eigenvector[i,0], eigenvector[i,1], eigenvector[i,2], atom.element))
+            i += 1
+        f.write('END\n')
+
+    # write a multistate pdb file interpolating along the eigenvector to visualise the direction
+    with mda.Writer(output_file.replace('.pdb', '_interpolated_2.pdb'), pca_selection.atoms.n_atoms) as W:
+        for i in range(0, 2, 1):
+            pca_selection.atoms.positions = pca_selection.atoms.positions + (i * eigenvector)
+            W.write(pca_selection.atoms)
+
+def write_pca_ref_pdb(u_structure, u_template, eigenvector, pca_selection_token, output_file='pca_ref.pdb'):#pca_reference='pca1.pdb', output_file='pca_ref.pdb'):
+
+    """
+    Wries a template PDB file for use in the PLUMED script. 
+
+    Parameters
+    ----------
+    Some
+
+    Returns
+    -------
+    None 
+        
+    """
+
+    list_of_atom_ids_in_template = []
+
+    # loop though atoms matchign the selection in the template universe and get their ids (not their indices) and make these into a list
+    for atom in u_template.select_atoms(pca_selection_token).atoms:
+        list_of_atom_ids_in_template.append(atom.id)
+
+    # print the length of the list
+    print('Number of atoms in the template universe: ', len(list_of_atom_ids_in_template))
+    #  check that this matches the length of the selection in the structure (ensemble) universe
+    print('Number of atoms in the ensemble universe: ', len(u_structure.select_atoms(pca_selection_token).atoms))
+
+    # if these dont match print an error
+    if len(list_of_atom_ids_in_template) != len(u_structure.select_atoms(pca_selection_token).atoms):
+        print('ERROR: Number of atoms in the template universe does not match the number of atoms in the ensemble universe\n so theres no guarantee the IDs correspond to the same atoms\n')
+
+    # write out the selection matching pca_selection_token while PRESERVING ATOM IDS from the template (i.e. not renumbered)
+    # this is important because the atom IDs in the PCA reference file must match those in the template
+
+    pca_selection = u_structure.select_atoms(pca_selection_token)
+
+    with open(output_file, 'w') as f:
+        i = 0
+        for atom in pca_selection.atoms:
+            f.write('ATOM  %5d %4s %3s %5d    %8.3f%8.3f%8.3f  1.00  1.00           %2s\n' % (list_of_atom_ids_in_template[i], atom.name, atom.resname, atom.resid, atom.position[0], atom.position[1], atom.position[2], atom.element))
+            i += 1
+        f.write('END\nREMARK TYPE=DIRECTION\n')
+
+    # now add the eigenvector to the file
+    with open(output_file, 'a') as f:
+        i = 0
+        for atom in pca_selection.atoms:
+            f.write('ATOM  %5d %4s %3s %5d    %8.3f%8.3f%8.3f  1.00  0.00           %2s\n' % (list_of_atom_ids_in_template[i], atom.name, atom.resname, atom.resid, eigenvector[i,0], eigenvector[i,1], eigenvector[i,2], atom.element))
+            i += 1
+        f.write('END\n')
+
+    # write a multistate pdb file interpolating along the eigenvector to visualise the direction
+    with mda.Writer(output_file.replace('.pdb', '_interpolated.pdb'), pca_selection.atoms.n_atoms) as W:
+        for i in range(-10, 10):
+            pca_selection.atoms.positions = pca_selection.atoms.positions + i * eigenvector
+            W.write(pca_selection.atoms)
+
+def plumed_input_writer(window_values, output_file='plumed.dat', force_constant=1000, cv_reference_pdb=None, molinfo_pdb=None, COM_1=None, COM_2=None):
 
     """
     Write a plumed input file for use in umbrella sampling, with appropriate restraint values, etc. 
@@ -292,90 +372,69 @@ def plumed_input_writer(window_values, output_file='plumed.dat', force_constant=
     """
     
     # Flag to indicate when CV is a PC/subspace projection or anything else with arbitrary units
-    # assume this is NOT the case if no reference pdb provided
-    if cv_ref_pdb != None:
+    if cv_reference_pdb != None:
         pca_cv = True
-    else:
-        pca_cv = False
-
-    if pca_cv = False:
+    else: 
+        pca_cv = False # assume distance based CV if no reference pdb provided
         window_values = window_values / 10 # convert window values to nm (from Angstrom)
 
     with open(output_file, 'w') as f:
-        f.write('MOLINFO STRUCTURE=%s \n\n' % template_pdb_for_umbrella_sampling)
-        if pca_cv == True:
-            f.write('CV: PCAVARS REFERENCE=%s TYPE=OPTIMAL\n\n' % cv_reference_pdb)
+        f.write('UNITS LENGTH=A\n\n')
+        f.write(f'MOLINFO STRUCTURE={molinfo_pdb} \n\n')
+
+        if pca_cv:
+            f.write(f'CV: PCAVARS REFERENCE={cv_reference_pdb} TYPE=OPTIMAL\n\n')
+            f.write(f'umbrella_restraint: RESTRAINT ARG=CV.eig-1 KAPPA={force_constant} AT=@replicas:')
+            print_arg = 'CV.*,umbrella_restraint.*'
         else:
-            f.write('com1: CENTER ATOMS=%s \n' % selection_parser(com1))
-            f.write('com2: CENTER ATOMS=%s \n' % selection_parser(com2))
-            f.write('\n')
+            f.write(f'com1: CENTER ATOMS={selection_parser(COM_1)} \n')
+            f.write(f'com2: CENTER ATOMS={selection_parser(COM_2)} \n\n')
             f.write('CV: DISTANCE ATOMS=com1,com2 \n\n')
-        f.write('umbrella_restraint: RESTRAINT ARG=CV KAPPA=%s AT=@replicas:' % force_constant)
-        for i in window_values:
-            if i == window_values[-1]:
-                f.write(str(i.round(4)) + '\n')
-            else:
-                f.write(str(i.round(4)) + ',')
-        f.write('\nPRINT ARG=CV,umbrella_restraint.* FILE=COLVAR_MULTI\n')
-        f.write('\n')
+            f.write(f'umbrella_restraint: RESTRAINT ARG=CV KAPPA={force_constant} AT=@replicas:')
+            print_arg = 'CV,umbrella_restraint.*'
 
+        f.write(','.join(map(lambda x: str(x.round(4)), window_values)) + '\n')
+        f.write(f'\nPRINT ARG={print_arg} FILE=COLVAR_MULTI\n\n')        
 
+def fix_overlapping_atoms(universe, selection_token='protein or (around 3.5 protein)', tolerance=0.001, step=0.05):
 
-# this should be a pdb from e.g. an unbiased simulation you've run before
-# containing everything in the simualtion box, protein, lipids, water etc. 
-# if you have a working topolgy for this system, you can re-use it here
-template_pdb_for_umbrella_sampling = (base_directory + 'template.pdb')
-u_template = mda.Universe(template_pdb_for_umbrella_sampling, template_pdb_for_umbrella_sampling)
-umbrella_sampling_directory = base_directory + 'umbrella_sampling/'
+    """
+    Fixes overlapping atoms using little nudges, docs tbd 
 
-# sort out your collective variable, for later inclusion in the
-# automatically generated plumed input file
-print('collective variable is:', collective_variable, '\n')
-if collective_variable == 'cyto_helix_bundle_separation':
-    com1 = cyto_helix_bundle_1
-    com2 = cyto_helix_bundle_2
-    pca_cv = False
-elif collective_variable == 'lumen_helix_bundle_separation':
-    com1 = lumen_helix_bundle_1
-    com2 = lumen_helix_bundle_2
-    pca_cv = False
-elif collective_variable == 'PC1':
-    com1 = None
-    com2 = None
-    pca_cv = True
-    write_pca_ref_pdb()
-    pca_ref_pdb = umbrella_sampling_directory + 'pca_ref.pdb'
-else:
-    print('I dont know what your collective variable is supposed to be, sort this out yourself (thinking emoji)')
-    com1 = '{your atoms here}'
-    com2 = '{your atoms here}'
-    pca_cv = False
+    Parameters
+    ----------
+    Some
 
-# prepare directories for each window
+    Returns
+    -------
+    None 
+        
+    """
 
-window_directories = []
-for i in range(mc_n_bins):
-    window_directories.append(umbrella_sampling_directory + 'window_' + str(i))
-    if not os.path.exists(window_directories[i]):
-        os.makedirs(window_directories[i])
-    shutil.copy(structure_directory + mc_runs_df.head(1)['path structures'].values[0][i], window_directories[i])    # copy the relevant structure in mc_runs_df to the window directory
+    from MDAnalysis.analysis.distances import distance_array
 
-# for each window, replace the coordinates of the protein in the template universe with the coordinates of the structure at the corresponding index in the best path
-for i in range(mc_n_bins):
+    # make a distance matrix for all atom pairs in the selection_token
+    # if any distances are less than the tolerance, move the atoms apart
 
-    # make a copy of the template universe
-    u = u_template.copy()
+    selection = universe.select_atoms(selection_token)
+    distances = distance_array(selection.positions, selection.positions)
+    np.fill_diagonal(distances, 10*tolerance) # so atoms cant "overlap themselves"
 
-    # make a universe out of the structure corresponding to the index in the best path
-    structure = mc_runs_df.head(1)['path structures'].values[0][i]
-    u_structure = mda.Universe(structure_directory + structure, structure_directory + structure)
+    # get the indices of the atoms that are too close
+    too_close = np.where(distances < tolerance)
 
-    # align the structure to the template universe
-    u_structure = align_universe(u_structure, u)
-    new_coordinates = protein_coordinate_replacer(u_structure, u)
+    # print the number of atoms that are too close
+    #print('number of atoms that are too close: ', len(too_close[0]))
 
-    # write out the universe to a pdb file
-    u.atoms.write(window_directories[i] + '/window_' + str(i) + '.pdb')
+    # for each pair that are too close, move them apart along the vector between them
+    for i in range(len(too_close[0])):
+        atom1 = selection[too_close[0][i]]
+        atom2 = selection[too_close[1][i]]
+        # random vector for translation
+        vector = np.random.rand(3)
 
-# write out the plumed input file
-plumed_input_writer(ideal_window_values, output_file = umbrella_sampling_directory + '/plumed.dat')
+        # move the atoms apart by step along the vector
+        atom1.position += vector * step
+        atom2.position -= vector * step
+
+    return universe.atoms.positions

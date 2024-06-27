@@ -13,7 +13,7 @@ from MDAnalysis.analysis.pca import PCA         # for PCA
 from Bio.PDB import PDBParser
 from Bio.PDB.DSSP import DSSP                   # for secondary structure selection
 
-def generate_selection_token(reference_pdb_file, conserved_residues=None, excluded_residues=None):
+def generate_selection_token(reference_pdb_file, conserved_residues=None, excluded_residues=None, explicitly_include=None):
 
     """
     Tries to generate a useful MDA selection token (for PCA etc.) based on some heuristics and user-speficied info.
@@ -147,5 +147,7 @@ def generate_selection_token(reference_pdb_file, conserved_residues=None, exclud
         rmsd_selection += ' or ( (' + selection_helices + ') and' + selection_conserved_residues + ')'
     if excluded_residues != None:
         rmsd_selection += ' and not (' + excluded_residues + ')'
+    if explicitly_include != None:
+        rmsd_selection += ' or ((' + explicitly_include + ') and name CA )'
 
     return(rmsd_selection)
