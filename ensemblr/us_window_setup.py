@@ -5,8 +5,10 @@ import numpy as np
 import os
 from MDAnalysis.analysis import align, rms
 import shutil
+from MDAnalysis.analysis import distances
+from MDAnalysis.analysis.distances import distance_array
 
-def selection_parser(mda_selection):
+def selection_parser(mda_selection, u_template):
 
     """
     Turns an MDA selection token into a safe list of atom IDs to pass to PLUMED
@@ -17,6 +19,7 @@ def selection_parser(mda_selection):
     ----------
     mda_selection : string, Required, default: None
         MDA selection token to parse.
+    u_template : MDAnalysis universe object, Required, default: None
 
     Returns
     -------
@@ -236,7 +239,7 @@ def protein_coordinate_replacer(u_structure, u_template, resid_offset=0, selecti
     #display(set(error_type_list))
     return u_template.atoms.positions # not important becauase the universe is modified in place, just return something
 
-def write_pca_ref_pdb_typeoptimal(u_structure, u_template, eigenvector, pca_selection_token, output_file='pca_ref.pdb'):#pca_reference='pca1.pdb', output_file='pca_ref.pdb'):
+def write_pca_ref_pdb(u_structure, u_template, eigenvector, pca_selection_token, offset=0, output_file='pca_ref.pdb'):#pca_reference='pca1.pdb', output_file='pca_ref.pdb'):
 
     """
     Wries a template PDB file for use in the PLUMED script. 
@@ -251,62 +254,9 @@ def write_pca_ref_pdb_typeoptimal(u_structure, u_template, eigenvector, pca_sele
         
     """
 
-    list_of_atom_ids_in_template = []
+    # fix offset so the selection token works properly
+    u_template.atoms.residues.resids -= offset
 
-    # loop though atoms matchign the selection in the template universe and get their ids (not their indices) and make these into a list
-    for atom in u_template.select_atoms(pca_selection_token).atoms:
-        list_of_atom_ids_in_template.append(atom.id)
-
-    # print the length of the list
-    print('Number of atoms in the template universe: ', len(list_of_atom_ids_in_template))
-    #  check that this matches the length of the selection in the structure (ensemble) universe
-    print('Number of atoms in the ensemble universe: ', len(u_structure.select_atoms(pca_selection_token).atoms))
-
-    # if these dont match print an error
-    if len(list_of_atom_ids_in_template) != len(u_structure.select_atoms(pca_selection_token).atoms):
-        print('ERROR: Number of atoms in the template universe does not match the number of atoms in the ensemble universe\n so theres no guarantee the IDs correspond to the same atoms\n')
-
-    # write out the selection matching pca_selection_token while PRESERVING ATOM IDS from the template (i.e. not renumbered)
-    # this is important because the atom IDs in the PCA reference file must match those in the template
-
-    pca_selection = u_structure.select_atoms(pca_selection_token)
-
-    with open(output_file, 'w') as f:
-        i = 0
-        f.write('REMARK TYPE=OPTIMAL\n')
-        for atom in pca_selection.atoms:
-            f.write('ATOM  %5d %4s %3s %5d    %8.3f%8.3f%8.3f  1.00  1.00           %2s\n' % (list_of_atom_ids_in_template[i], atom.name, atom.resname, atom.resid, atom.position[0], atom.position[1], atom.position[2], atom.element))
-            i += 1
-        f.write('END\nREMARK TYPE=OPTIMAL\n')
-
-    # now add the eigenvector to the file
-    with open(output_file, 'a') as f:
-        i = 0
-        for atom in pca_selection.atoms:
-            f.write('ATOM  %5d %4s %3s %5d    %8.3f%8.3f%8.3f  1.00  0.00           %2s\n' % (list_of_atom_ids_in_template[i], atom.name, atom.resname, atom.resid, eigenvector[i,0], eigenvector[i,1], eigenvector[i,2], atom.element))
-            i += 1
-        f.write('END\n')
-
-    # write a multistate pdb file interpolating along the eigenvector to visualise the direction
-    with mda.Writer(output_file.replace('.pdb', '_interpolated_2.pdb'), pca_selection.atoms.n_atoms) as W:
-        for i in range(0, 2, 1):
-            pca_selection.atoms.positions = pca_selection.atoms.positions + (i * eigenvector)
-            W.write(pca_selection.atoms)
-
-def write_pca_ref_pdb(u_structure, u_template, eigenvector, pca_selection_token, output_file='pca_ref.pdb'):#pca_reference='pca1.pdb', output_file='pca_ref.pdb'):
-
-    """
-    Wries a template PDB file for use in the PLUMED script. 
-
-    Parameters
-    ----------
-    Some
-
-    Returns
-    -------
-    None 
-        
-    """
 
     list_of_atom_ids_in_template = []
 
@@ -331,7 +281,7 @@ def write_pca_ref_pdb(u_structure, u_template, eigenvector, pca_selection_token,
     with open(output_file, 'w') as f:
         i = 0
         for atom in pca_selection.atoms:
-            f.write('ATOM  %5d %4s %3s %5d    %8.3f%8.3f%8.3f  1.00  1.00           %2s\n' % (list_of_atom_ids_in_template[i], atom.name, atom.resname, atom.resid, atom.position[0], atom.position[1], atom.position[2], atom.element))
+            f.write('ATOM  %5d %4s %3s %5d    %8.3f%8.3f%8.3f  1.00  1.00           %2s\n' % (list_of_atom_ids_in_template[i], atom.name, atom.resname, atom.resid+offset, atom.position[0], atom.position[1], atom.position[2], atom.element))
             i += 1
         f.write('END\nREMARK TYPE=DIRECTION\n')
 
@@ -339,7 +289,7 @@ def write_pca_ref_pdb(u_structure, u_template, eigenvector, pca_selection_token,
     with open(output_file, 'a') as f:
         i = 0
         for atom in pca_selection.atoms:
-            f.write('ATOM  %5d %4s %3s %5d    %8.3f%8.3f%8.3f  1.00  0.00           %2s\n' % (list_of_atom_ids_in_template[i], atom.name, atom.resname, atom.resid, eigenvector[i,0], eigenvector[i,1], eigenvector[i,2], atom.element))
+            f.write('ATOM  %5d %4s %3s %5d    %8.3f%8.3f%8.3f  1.00  0.00           %2s\n' % (list_of_atom_ids_in_template[i], atom.name, atom.resname, atom.resid+offset, eigenvector[i,0], eigenvector[i,1], eigenvector[i,2], atom.element))
             i += 1
         f.write('END\n')
 
@@ -349,14 +299,14 @@ def write_pca_ref_pdb(u_structure, u_template, eigenvector, pca_selection_token,
             pca_selection.atoms.positions = pca_selection.atoms.positions + i * eigenvector
             W.write(pca_selection.atoms)
 
-def plumed_input_writer(window_values, output_file='plumed.dat', force_constant=1000, cv_reference_pdb=None, molinfo_pdb=None, COM_1=None, COM_2=None):
+def plumed_input_writer(cv_window_values, output_file='plumed.dat', force_constant=1000, cv_reference_pdb=None, molinfo_pdb=None, scale_factor=1, COM_1=None, COM_2=None, multidir=False):
 
     """
-    Write a plumed input file for use in umbrella sampling, with appropriate restraint values, etc. 
+    Write a plumed input file for use in umbrella sampling, with appropriate restraint values, etc. Assumes CV is a distance if no cv_reference_pdb is provided.
 
     Parameters
     ----------
-    window_values : list, Required, default: None
+    cv_window_values : list, Required, default: None
         list of restraint values in the CV space.
     output_file : string, Optional, default: 'plumed.dat'
         filename of output PLUMED file.
@@ -364,6 +314,17 @@ def plumed_input_writer(window_values, output_file='plumed.dat', force_constant=
         Force consant for harmonic restraints in whatever units plumed uses by default kJ / nm ^ 2
     cv_reference_pdb : string, Optional, default: None
         PDB file used by PLUMED defining the linear subspace / PC projection
+    molinfo_pdb : string, Optional, default: None
+        PDB file used by PLUMED defining the molecule information
+    COM_1 : string, Optional, default: None
+        Selection token for the first center of mass for a distance CV, if this is passed, a distance CV is assumed
+    COM_2 : string, Optional, default: None
+        Selection token for the second center of mass for a distance CV
+    multidir : bool, Optional, default: False
+        Flag to indicate if this is for a multidir simulation
+    scale_factor : float, Optional, default: 1
+        PLUMED divides the value of the projection by the number of atoms in the CV, so this will make your PLUMED values consistent with the PC values here
+
 
     Returns
     -------
@@ -372,31 +333,67 @@ def plumed_input_writer(window_values, output_file='plumed.dat', force_constant=
     """
     
     # Flag to indicate when CV is a PC/subspace projection or anything else with arbitrary units
-    if cv_reference_pdb != None:
-        pca_cv = True
+    # in COM_1 and COM_2 are provided, assume NO pca CV
+    if COM_1 != None:
+        pca_cv = False
     else: 
-        pca_cv = False # assume distance based CV if no reference pdb provided
-        window_values = window_values / 10 # convert window values to nm (from Angstrom)
+        pca_cv = True 
+        #cv_window_values = cv_window_values # convert window values to nm (from Angstrom)
 
-    with open(output_file, 'w') as f:
-        f.write('UNITS LENGTH=A\n\n')
-        f.write(f'MOLINFO STRUCTURE={molinfo_pdb} \n\n')
+    # sanitise cv_reference_pdb if it is an absolute path
+    if cv_reference_pdb != None:
+        cv_reference_pdb_filename = os.path.basename(cv_reference_pdb)
+    if molinfo_pdb != None:
+        molinfo_pdb_filename = os.path.basename(molinfo_pdb)
 
-        if pca_cv:
-            f.write(f'CV: PCAVARS REFERENCE={cv_reference_pdb} TYPE=OPTIMAL\n\n')
-            f.write(f'umbrella_restraint: RESTRAINT ARG=CV.eig-1 KAPPA={force_constant} AT=@replicas:')
-            print_arg = 'CV.*,umbrella_restraint.*'
-        else:
-            f.write(f'com1: CENTER ATOMS={selection_parser(COM_1)} \n')
-            f.write(f'com2: CENTER ATOMS={selection_parser(COM_2)} \n\n')
-            f.write('CV: DISTANCE ATOMS=com1,com2 \n\n')
-            f.write(f'umbrella_restraint: RESTRAINT ARG=CV KAPPA={force_constant} AT=@replicas:')
-            print_arg = 'CV,umbrella_restraint.*'
+    if multidir == True:
+    # write a multidir plumed input
+        with open(output_file, 'w') as f:
+            f.write('UNITS LENGTH=A\n\n')
+            f.write(f'MOLINFO STRUCTURE=../window_0/{molinfo_pdb_filename} \n\n')
 
-        f.write(','.join(map(lambda x: str(x.round(4)), window_values)) + '\n')
-        f.write(f'\nPRINT ARG={print_arg} FILE=COLVAR_MULTI\n\n')        
+            if pca_cv:
+                f.write(f'pcproj: PCAVARS REFERENCE=../{cv_reference_pdb_filename} TYPE=OPTIMAL\n\n')
+                f.write(f'CV: MATHEVAL ARG=pcproj.eig-1 FUNC=x*{scale_factor} PERIODIC=NO \n\n')
+                f.write(f'umbrella_restraint: RESTRAINT ARG=CV KAPPA={force_constant} AT=@replicas:')
+                print_arg = 'CV.*,umbrella_restraint.*'
+            else:
+                # make universe out of reference pdb
+                u_template = mda.Universe(cv_reference_pdb)
+                f.write(f'com1: CENTER ATOMS={selection_parser(COM_1, u_template)} \n')
+                f.write(f'com2: CENTER ATOMS={selection_parser(COM_2, u_template)} \n\n')
+                f.write('CV: DISTANCE ATOMS=com1,com2 \n\n')
+                f.write(f'umbrella_restraint: RESTRAINT ARG=CV KAPPA={force_constant} AT=@replicas:')
+                print_arg = 'CV,umbrella_restraint.*'
 
-def fix_overlapping_atoms(universe, selection_token='protein or (around 3.5 protein)', tolerance=0.001, step=0.05):
+            f.write(','.join(map(lambda x: str(x.round(4)), cv_window_values)) + '\n')
+            f.write(f'\nPRINT ARG={print_arg} FILE=COLVAR_MULTI\n\n')        
+    else:
+    # serial plumed input
+        with open(output_file, 'w') as f:
+            f.write('UNITS LENGTH=A\n\n')
+            f.write(f'MOLINFO STRUCTURE=../window_0/{molinfo_pdb_filename} \n\n')
+
+            if pca_cv:
+                f.write(f'pcproj: PCAVARS REFERENCE=../{cv_reference_pdb_filename} TYPE=OPTIMAL\n\n')
+                f.write(f'CV: MATHEVAL ARG=pcproj.eig-1 FUNC=x*{scale_factor} PERIODIC=NO \n\n')
+                f.write(f'umbrella_restraint: RESTRAINT ARG=CV KAPPA={force_constant} AT=')
+                print_arg = 'CV.*,umbrella_restraint.*'
+            else:
+                # make universe out of reference pdb
+                u_template = mda.Universe(cv_reference_pdb)
+                f.write(f'com1: CENTER ATOMS={selection_parser(COM_1, u_template)} \n')
+                f.write(f'com2: CENTER ATOMS={selection_parser(COM_2, u_template)} \n\n')
+                f.write('CV: DISTANCE ATOMS=com1,com2 \n\n')
+                f.write(f'umbrella_restraint: RESTRAINT ARG=CV KAPPA={force_constant} AT=')
+                print_arg = 'CV,umbrella_restraint.*'
+
+            # write the single cv value
+            f.write(str(cv_window_values) + '\n')
+            f.write(f'\nPRINT ARG={print_arg} FILE=COLVAR\n\n')        
+
+
+def fix_overlapping_atoms(universe, selection_token='protein or (around 10 protein)', tolerance=0.001, step=0.05):
 
     """
     Fixes overlapping atoms using little nudges, docs tbd 
@@ -411,30 +408,222 @@ def fix_overlapping_atoms(universe, selection_token='protein or (around 3.5 prot
         
     """
 
-    from MDAnalysis.analysis.distances import distance_array
+    
 
     # make a distance matrix for all atom pairs in the selection_token
     # if any distances are less than the tolerance, move the atoms apart
 
-    selection = universe.select_atoms(selection_token)
-    distances = distance_array(selection.positions, selection.positions)
-    np.fill_diagonal(distances, 10*tolerance) # so atoms cant "overlap themselves"
+    max_iterations = 20
+    num_too_close = 1
+    iteration_count = 0
 
-    # get the indices of the atoms that are too close
-    too_close = np.where(distances < tolerance)
+    too_close = 1
+    while num_too_close > 0 and iteration_count < max_iterations:
+        iteration_count += 1 
 
-    # print the number of atoms that are too close
-    #print('number of atoms that are too close: ', len(too_close[0]))
+        selection = universe.select_atoms(selection_token)
+        distances = distance_array(selection.positions, selection.positions)
+        np.fill_diagonal(distances, 10*tolerance) # so atoms cant "overlap themselves"
 
-    # for each pair that are too close, move them apart along the vector between them
-    for i in range(len(too_close[0])):
-        atom1 = selection[too_close[0][i]]
-        atom2 = selection[too_close[1][i]]
-        # random vector for translation
-        vector = np.random.rand(3)
+        # get the indices of the atoms that are too close
+        too_close = np.where(distances < tolerance)
 
-        # move the atoms apart by step along the vector
-        atom1.position += vector * step
-        atom2.position -= vector * step
+        num_too_close =  len(too_close[0])
+
+        # print the number of atoms that are too close
+        #print('number of atoms within', tolerance, ': ', num_too_close, 'iteration: ', iteration_count)
+
+        # for each pair that are too close, move them apart along the vector between them
+        for i in range(len(too_close[0])):
+            atom1 = selection[too_close[0][i]]
+            atom2 = selection[too_close[1][i]]
+            # random vector for translation
+            vector = np.random.rand(3)
+
+            # move the atoms apart by step along the vector
+            atom1.position += vector * step
+            atom2.position -= vector * step
+
+    if iteration_count == max_iterations:
+        print('Max iterations reached, some atoms still <', tolerance, ' A apart')
+    else:
+        print('Done fixing overlapping atoms')
 
     return universe.atoms.positions
+
+def fix_long_bonds(universe, thresh=10.0, fudge_dist=1):
+
+    # for each residue in the selection, distance matrix between all atoms (as proxy for bond lengths in absence of bond information)
+    # if any are greater than thresh, move the atoms apart
+
+    # loop through each residue in the selection
+    selection = universe.select_atoms('protein')
+
+    # loop through residues
+    for residue in selection.residues:
+        # get the distance matrix for the atoms in the residue
+        #distances = distance_array(residue.atoms.positions, residue.atoms.positions)
+        # get the distance matrix for all atoms and the CA atom
+        distances = distance_array(residue.atoms.positions, residue.atoms.select_atoms('name C').positions)
+        # get the indices of the atoms that are too close
+        too_far = np.where(distances > thresh)
+        
+        # if there are any atoms that are too close
+        if len(too_far[0]) > 0:
+            #print('number of atoms greater than', thresh, ': ', len(too_far[0]))
+
+            # for each atom that is too far from the CA atom, move it closer
+            for i in range(len(too_far[0])):
+                atom1 = residue.atoms[too_far[0][i]]
+                atom2 = residue.atoms[too_far[1][i]]
+                # get the vector between the two atoms
+                vector = atom1.position - atom2.position
+                # normalise the vector
+                vector = vector / np.linalg.norm(vector)
+                # translate atom 1 such that it is now at a distance of thresh from atom 2
+                atom1.position = atom2.position + vector * fudge_dist
+            
+            # fix overlapping atoms
+            #fix_overlapping_atoms(universe, selection_token='resid %s' % residue.resid, tolerance=0.4, step=0.1)
+
+            distances = distance_array(residue.atoms.positions, residue.atoms.select_atoms('name C').positions)
+            too_far = np.where(distances > thresh)
+            #print('NEW number of atoms greater than', thresh, ': ', len(too_far[0]))
+
+    #print('Done fixing long bonds')
+    return universe.atoms.positions
+
+def fix_overlapping_with_protein(universe, dist_interval=1.0):
+    """
+    find lipids within the protein "cylinder" and translate them out.
+
+    Parameters
+    ----------
+    universe : MDAnalysis universe object, Required, default: None
+        the universe to modify in memory.
+    dist_interval : float, Optional, default: 1.0 
+        distance by which to translate the lipids.
+
+    Returns
+    -------
+    None 
+        
+    """
+
+    # find lipids within the protein "cylinder" and translate them out
+    # select cylindrical zone around protein
+    
+    # get vector between COM of protein adn COM of lipids in the cylinder
+    # translate lipids in cylinder by this vector
+
+    # get cellextent in z
+    #cell_extent_z = universe.dimensions[2]
+
+    # get the min and max z values of everything in the universe
+    min_z = np.min(universe.atoms.positions[:,2])
+    max_z = np.max(universe.atoms.positions[:,2])
+    # work out the dimensions of the box from this
+    box_z = max_z - min_z
+
+    # get protein COM in z
+    cell_extent_z = box_z
+
+    protein = universe.select_atoms('protein')
+
+    protein_com_z = protein.atoms.center_of_geometry(pbc=False)[2]
+    # get the z distance between the protein COM and the top of the box
+    protein_top_z = cell_extent_z - protein_com_z
+    # get the z distance between the protein COM and the bottom of the box
+    protein_bottom_z = -protein_com_z 
+    # store temporary protein coordinates
+    protein_coords = protein.atoms.positions
+    # set hte z coordinate of the protein to zero
+    protein_coords[:,2] = 0
+    # make a distance matrix of the protein
+    protein_distmat = distances.distance_array(protein_coords, protein_coords, box=universe.dimensions)
+    # get the mean distance between protein atoms
+    protein_radius = np.mean(protein_distmat[np.triu_indices_from(protein_distmat, k=1)])/2
+
+    # get the largest distance between protein atoms
+    protein_largest_diameter = np.max(protein_distmat)/2
+
+    # cylinder
+    #print(protein_radius*2, protein_top_z, protein_bottom_z)
+
+    lipids_in_cylinder_token = "((byres name P and (cyzone %s %s %s protein)))" %(protein_radius*2.01, protein_top_z, protein_bottom_z)
+
+    # while there are still lipids in the cylinder
+    selection = universe.select_atoms(lipids_in_cylinder_token)
+    while len(selection) > 0:
+
+        # print out how many still in the cylinder
+        #print(f"lipids in cylinder: {len(selection)}")
+
+        # update the selection
+        selection = universe.select_atoms(lipids_in_cylinder_token)
+
+        for lipid in selection.residues:
+        
+                # get the vector between the COM of the protein and the COM of the lipid
+                vector = lipid.atoms.center_of_geometry(pbc=False) - protein.atoms.center_of_geometry(pbc=False)
+                # set the third component to zero (z axis)
+                vector[2] = 0
+    
+                # normalise the vector
+                vector = vector / np.linalg.norm(vector)
+    
+                # move the lipid away from the protein along this vector
+                lipid.atoms.translate(dist_interval*vector)
+
+    #end_time = time.time()
+    #print(f"done pushing lipids")
+
+    return universe.atoms.positions
+
+def prevent_threaded_lipids(universe, thresh=3.0, dist_interval=1.0, selection_token='resname DLPC'):
+
+    protein = universe.select_atoms('protein')
+
+    # all lipids within 2 A of aromatic ring atoms 
+    lipids = universe.select_atoms('byres (%s) and around %s ((resname PHE or resname TYR) and (name CG CD1 CD2 CE1 CE2 CZ))' % (selection_token, thresh))
+    # if this is not empty, move the lipids away from the aromatic ring and print a message
+
+    while len(lipids) > 0:
+        #print("moving suspect lipid %s" % lipids.residues.resids)
+        #print("number of possible threaded lipids: ", len(lipids))
+        lipids = universe.select_atoms('byres (%s) and around %s ((resname PHE or resname TYR) and (name CG CD1 CD2 CE1 CE2 CZ))' % (selection_token, thresh))
+
+        # move the lpid 
+        # for each syspect lipid, get the vector between this and the com of hte prtoein
+        for lipid in lipids.residues:
+            vector = lipid.atoms.center_of_geometry(pbc=False) - protein.atoms.center_of_geometry(pbc=False)
+            vector[2] = 0
+            vector = vector / np.linalg.norm(vector)
+            lipid.atoms.translate(dist_interval*vector)
+
+    #print("Done fixing threaded lipids")
+    return universe.atoms.positions
+
+#def check_threaded_lipids(universe):
+#    
+#    # look for any bonds greater than 2 Angstrom in non-protein, non-water
+#    # if any are found, print a warning
+#
+#    # get the bonds
+#    bonds = universe.atoms.bonds
+#    # get the bonds that are greater than 2 Angstrom
+#    long_bonds = bonds[bonds.distances() > 2]
+#    long_atoms = np.unique(long_bonds.indices)
+#    resnames = universe.atoms[long_atoms].resnames
+
+#def prepare_gromacs_minimisation(structure):
+#    mdp = """
+#    integrator = steep
+#    emtol = 1000.0
+#    nsteps = 5000
+#    """
+#    # write this to a file in the umbrella sampling directory
+#    with open('em.mdp', 'w') as f:
+#        f.write(mdp)
+    
+

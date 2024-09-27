@@ -13,7 +13,7 @@ from MDAnalysis.analysis.pca import PCA         # for PCA
 from Bio.PDB import PDBParser
 from Bio.PDB.DSSP import DSSP                   # for secondary structure selection
 
-def generate_selection_token(reference_pdb_file, conserved_residues=None, excluded_residues=None, explicitly_include=None):
+def generate_selection_token(reference_pdb_file, offset=0, conserved_residues=None, excluded_residues=None, explicitly_include=None):
 
     """
     Tries to generate a useful MDA selection token (for PCA etc.) based on some heuristics and user-speficied info.
@@ -23,6 +23,8 @@ def generate_selection_token(reference_pdb_file, conserved_residues=None, exclud
     Also, anything matching conserved_residues will have certain (CG/CZ) sidechain atoms included.
 
     Currently doesnt work if you dont pass both optional arguments
+
+    WARNING: IT IS ASSUMED THAT CONSERVED, EXCLUDED RESIDUES ETC ARE PASSED WITH THE OFFSET ALREADY INCLUDED
 
     Parameters
     ----------
@@ -44,7 +46,7 @@ def generate_selection_token(reference_pdb_file, conserved_residues=None, exclud
     #    conserved_residues = ''
     #if excluded_residues is None:
     #    excluded_residues = ''
-
+       
     # identify regions of secondary structure
     p = PDBParser()
     structure = p.get_structure('reference', reference_pdb_file)

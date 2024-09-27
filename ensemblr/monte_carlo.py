@@ -18,7 +18,7 @@ from multiprocessing import Pool                # for multiprocessing
 from tqdm import tqdm                           # for progress bars
 
 # function to calculate the energy of a given path 
-def calc_energy(path, rmsd_matrix, cv_matrix, dataframe, wf_rmsd=1, wf_cv=1):
+def calc_energy(path, rmsd_matrix, cv_matrix, dataframe, cv2_matrix=None, wf_rmsd=1, wf_cv=1):
 
     """
     Function to calculate the "energy" of a path. Currently hardcoded to work with the ensemble dataframe.
@@ -47,6 +47,8 @@ def calc_energy(path, rmsd_matrix, cv_matrix, dataframe, wf_rmsd=1, wf_cv=1):
         Coefficient for the rmsd part of the energy expression. Set to zero for a path with random smoothness, or to -1 for a maximally "unsmooth" path.
     wf_cv : float, Optional, default: 1
         Coefficient for the CV part of the energy expression. Determines "smoothness" w.r.t. values of the CV along the path. 1 should be ideal for umbrella sampling.
+    cv2_matrix : numpy array, Optional, default: None
+        The matrix for an optional second CV the ensemble. e.g. for PC2. If not provided, the energy will be calculated without this term.
 
     Returns
     -------
@@ -66,13 +68,19 @@ def calc_energy(path, rmsd_matrix, cv_matrix, dataframe, wf_rmsd=1, wf_cv=1):
         energy_cv += (cv_matrix[np.where(dataframe.index.values == path[i])[0][0], np.where(dataframe.index.values == path[i+1])[0][0]]**2)
     energy_cv = wf_cv * np.sqrt ( 1/path_length * energy_cv )
 
+    energy_cv2 = 0
+    if cv2_matrix is not None:
+        for i in range(path_length -1):
+            energy_cv2 += (cv2_matrix[np.where(dataframe.index.values == path[i])[0][0], np.where(dataframe.index.values == path[i+1])[0][0]]**2)
+        energy_cv2 = wf_cv * np.sqrt ( 1/path_length * energy_cv2 )
+
     total_energy = 0
-    total_energy = energy_rmsd + energy_cv
+    total_energy = energy_rmsd + energy_cv + energy_cv2
 
     return total_energy
 
 # define a function that runs monte carlo simulated annealing to optimise smoothness
-def mc_path_optimisation(seed, initial_guess_indices, rmsd_matrix, cv_matrix, dataframe, fixed_endpoints=True, mc_n_steps=1000, initial_temperature=0.01, cooling_factor=10000):
+def mc_path_optimisation(seed, initial_guess_indices, rmsd_matrix, cv_matrix, dataframe, fixed_endpoints=True, cv2_matrix=None, mc_n_steps=1000, initial_temperature=0.01, cooling_factor=10000):
 
     """
     Function to select the optimal set of N structures for a path of length N between two endpoints. Currently hardcoded to work with the ensemble dataframe.
@@ -93,7 +101,9 @@ def mc_path_optimisation(seed, initial_guess_indices, rmsd_matrix, cv_matrix, da
         Initial temperature for metropolis criterion.
     cooling_factor : float, Optional, default: 10000
         Defines temperature schedule. A list of N logarithmically decreasing temperatures is generated between initial_temperature and initial_temperature/cooling_factor.
-
+    cv2_matrix : numpy array, Optional, default: None
+        The matrix for an optional second CV the ensemble. e.g. for PC2. If not provided, the energy will be calculated without this term.
+        
     Returns
     -------
     total_energy : float
@@ -108,7 +118,7 @@ def mc_path_optimisation(seed, initial_guess_indices, rmsd_matrix, cv_matrix, da
         Record of the total path energies from initial path to the final optimised path (shows relaxation)
     """
 
-    fixed_endpoints = True
+    #fixed_endpoints = True
     mc_n_steps = 1000
     initial_temperature = 0.01
     cooling_factor = 10000 # initial temp is divided by this to get the final temperature
@@ -138,7 +148,7 @@ def mc_path_optimisation(seed, initial_guess_indices, rmsd_matrix, cv_matrix, da
 
         # calculate energy of the initial path
         energy = 0
-        energy = calc_energy(path=mcpath, rmsd_matrix=rmsd_matrix, cv_matrix=cv_matrix, dataframe=dataframe)
+        energy = calc_energy(path=mcpath, rmsd_matrix=rmsd_matrix, cv_matrix=cv_matrix, dataframe=dataframe, cv2_matrix=cv2_matrix)
         
         # propose an exchange of a random structure in the path with a random structure from the pool
         new_mcpath = mcpath.copy()
@@ -165,11 +175,11 @@ def mc_path_optimisation(seed, initial_guess_indices, rmsd_matrix, cv_matrix, da
 
             # calculate the energy of the original path
             energy = 0
-            energy = calc_energy(mcpath, rmsd_matrix=rmsd_matrix, cv_matrix=cv_matrix, dataframe=dataframe)
+            energy = calc_energy(mcpath, rmsd_matrix=rmsd_matrix, cv_matrix=cv_matrix, dataframe=dataframe, cv2_matrix=cv2_matrix)
 
             # calcualte energy of proposed path
             new_energy = 0
-            new_energy = calc_energy(path=new_mcpath, rmsd_matrix=rmsd_matrix, cv_matrix=cv_matrix, dataframe=dataframe)
+            new_energy = calc_energy(path=new_mcpath, rmsd_matrix=rmsd_matrix, cv_matrix=cv_matrix, dataframe=dataframe, cv2_matrix=cv2_matrix)
 
             # calculate the difference between the two energies
             delta_energy = 0

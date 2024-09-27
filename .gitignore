@@ -14,6 +14,10 @@ __pycache__/
 pip-log.txt
 pip-delete-this-directory.txt
 
+ctns_notebook.ipynb
+system-builder.ipynb
+ensemblr.ipynb
+
 # Unit test / coverage reports
 htmlcov/
 .tox/

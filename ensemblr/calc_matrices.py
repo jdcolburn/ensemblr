@@ -38,7 +38,7 @@ def get_rmsdmat_jax(ensemble_pdb, ensemble_dataframe):
       results.append(np.array(jnp_rmsd_parallel(data[n],data)))
 
     # turn the "results" list into a numpy array float 64
-    results = np.array(results, dtype=np.float64)
+    results = np.array(results, dtype=np.float32)
 
     return results
 
