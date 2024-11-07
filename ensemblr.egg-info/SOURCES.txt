@@ -6,7 +6,9 @@ pyproject.toml
 setup.cfg
 ensemblr/__init__.py
 ensemblr/_version.py
+ensemblr/calc_matrices.py
 ensemblr/ensemblr.py
+ensemblr/misc_functions.py
 ensemblr/monte_carlo.py
 ensemblr/py.typed
 ensemblr/smart_selector.py
