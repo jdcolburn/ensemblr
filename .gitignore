@@ -17,6 +17,7 @@ pip-delete-this-directory.txt
 ctns_notebook.ipynb
 system-builder.ipynb
 ensemblr.ipynb
+ctns_notebook_tinkering.ipynb
 
 # Unit test / coverage reports
 htmlcov/

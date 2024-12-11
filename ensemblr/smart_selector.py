@@ -58,7 +58,7 @@ def generate_selection_token(reference_pdb_file, offset=0, conserved_residues=No
     loops   = []
 
     # print the string of secondary structure labels
-    print(''.join([dssp[key][2] for key in dssp.keys()] ))
+    #print(''.join([dssp[key][2] for key in dssp.keys()] ))
 
     # get secondary structure labels for resIDs
     for key in dssp.keys():

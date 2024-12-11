@@ -16,9 +16,10 @@ from Bio.PDB.SASA import ShrakeRupley           # for SASA calculation
 from IPython.display import display             # for data frame display
 from multiprocessing import Pool                # for multiprocessing
 from tqdm import tqdm                           # for progress bars
+import gc
 
 # function to calculate the energy of a given path 
-def calc_energy(path, rmsd_matrix, cv_matrix, dataframe, odf_matrix=None, dos_matrix=None, wf_rmsd=0.01, wf_cv=1, wf_odf=0.5, wf_dos=0.01):
+def calc_energy(path, rmsd_matrix, cv_matrix, dataframe, odf_matrix=None, dos_matrix=None, wf_rmsd=0.1, wf_cv=1, wf_odf=1, wf_dos=0.1):   #  wf_rmsd=0.01, wf_cv=1, wf_odf=0.5, wf_dos=0.001
 
     """
     Function to calculate the "energy" of a path. Currently hardcoded to work with the ensemble dataframe.
@@ -90,7 +91,7 @@ def calc_energy(path, rmsd_matrix, cv_matrix, dataframe, odf_matrix=None, dos_ma
     return total_energy
 
 # define a function that runs monte carlo simulated annealing to optimise smoothness
-def mc_path_optimisation(seed, initial_guess_indices, rmsd_matrix, cv_matrix, dataframe, fixed_endpoints=True, odf_matrix=None, dos_matrix=None, mc_n_steps=1200, initial_temperature=0.0001, cooling_factor=10000):
+def mc_path_optimisation(seed, initial_guess_indices, rmsd_matrix, cv_matrix, dataframe, fixed_endpoints=True, odf_matrix=None, dos_matrix=None, mc_n_steps=1000, initial_temperature=0.0001, cooling_factor=10000, debug=True):
 
     """
     Function to select the optimal set of N structures for a path of length N between two endpoints. Currently hardcoded to work with the ensemble dataframe.
@@ -221,6 +222,11 @@ def mc_path_optimisation(seed, initial_guess_indices, rmsd_matrix, cv_matrix, da
     
     final_path = path_energies[final_energy]
     final_path_structures = tuple(dataframe.loc[final_path]['structure'].values)
-    relaxation_energies = list(path_energies.keys())
 
+    if debug == True:
+        relaxation_energies = list(path_energies.keys())
+    else:
+        relaxation_energies = None
+
+    gc.collect()
     return [final_energy, final_path, final_path_structures, relaxation_energies]
