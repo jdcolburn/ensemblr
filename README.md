@@ -1,18 +1,5 @@
-ensemblr
 ==============================
-[//]: # (Badges)
-[![GitHub Actions Build Status](https://github.com/jdcolburn/ensemblr/workflows/CI/badge.svg)](https://github.com/jdcolburn/ensemblr/actions?query=workflow%3ACI)
-[![codecov](https://codecov.io/gh/jdcolburn/ensemblr/branch/main/graph/badge.svg)](https://codecov.io/gh/jdcolburn/ensemblr/branch/main)
-
-
-Tools for analysing AF2 ensembles
-
-#### Acknowledgements
- 
-Project based on the 
-[Computational Molecular Science Python Cookiecutter](https://github.com/molssi/cookiecutter-cms) version 1.1.
-
-# (Name TBD)
+# ensemblr
 
 SBCB notebook-driven workflow for using AlphaFold (AF) structural ensembles to perform umbrella sampling (US).
 
@@ -22,6 +9,11 @@ This repository is intended to document the workflow used to:
 - select seed structures 
 
 Also included is a basic routine that embeds these seed structures into user-provided coordinates. This code is primarily designed for transparency and reuse by other researchers, rather than as a fully packaged, general-purpose software tool.
+
+#### Acknowledgements
+ 
+Project based on the 
+[Computational Molecular Science Python Cookiecutter](https://github.com/molssi/cookiecutter-cms) version 1.1.
 
 ---
 
