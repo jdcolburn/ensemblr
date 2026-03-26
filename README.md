@@ -2,7 +2,7 @@
 
 A notebook-driven workflow for using **AlphaFold (AF) structural ensembles** to construct collective variables (CVs) and generate umbrella sampling (US) setups.
 
-The idea is to treat the "synthetic" AF ensemble as a coarse or approximate prior, and to recover the thermodynamics of the real ensemble using enhanced sampling.
+The idea is to treat the **synthetic ensemble** as a coarse or approximate prior, and to recover the thermodynamics of the **real ensemble** using enhanced sampling.
 
 ---
 
@@ -16,9 +16,7 @@ This repository documents a workflow to:
 - Construct smooth transition paths  
 - Generate umbrella sampling inputs  
 
-A lightweight embedding routine is also provided to insert selected structures into simulation-ready systems.
-
-> This code prioritises **transparency and reproducibility** over general-purpose packaging.
+A lightweight embedding routine is also provided to insert selected structures into simulation-ready systems. This code prioritises **transparency and reproducibility** over general-purpose packaging.
 
 ---
 
