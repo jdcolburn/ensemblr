@@ -1,108 +1,94 @@
-==============================
 # ensemblr
 
-SBCB notebook-driven workflow for using AlphaFold (AF) structural ensembles to perform umbrella sampling (US).
+A notebook-driven workflow for using **AlphaFold (AF) structural ensembles** to construct collective variables (CVs) and generate umbrella sampling (US) setups.
 
-This repository is intended to document the workflow used to:
-- analyse structural ensembles
-- identify collective variables 
-- select seed structures 
-
-Also included is a basic routine that embeds these seed structures into user-provided coordinates. This code is primarily designed for transparency and reuse by other researchers, rather than as a fully packaged, general-purpose software tool.
-
-#### Acknowledgements
- 
-Project based on the 
-[Computational Molecular Science Python Cookiecutter](https://github.com/molssi/cookiecutter-cms) version 1.1.
+The idea is to treat the "synthetic" AF ensemble as a coarse or approximate prior, and to recover the thermodynamics of the real ensemble using enhanced sampling.
 
 ---
 
 ## Overview
 
-The key idea is to treat the synthetic (AF) ensemble as a coarse or approximate representation of the real conformational landscape, and to use it to find various optimal paths between states of interest.
+This repository documents a workflow to:
 
-### Pipeline
+- Analyse AF2 structural ensembles  
+- Identify collective variables  
+- Select representative seed structures  
+- Construct smooth transition paths  
+- Generate umbrella sampling inputs  
+
+A lightweight embedding routine is also provided to insert selected structures into simulation-ready systems.
+
+> This code prioritises **transparency and reproducibility** over general-purpose packaging.
+
+---
+
+## Pipeline
 
 1. **Generate ensemble**
-   - AlphaFold ensemble (e.g. via localcolabfold)
+   - External (e.g. `localcolabfold`)
+   - Example script: `generate_af2_ensemble.sh`
 
 2. **Preprocess structures**
-   - filtering (e.g. pLDDT)
-   - alignment / atom selection
-   - feature calculation (RMSD, distances, SASA, etc.)
+   - Filtering (e.g. pLDDT)
+   - Alignment and atom selection
+   - Feature calculation (RMSD, distances, SASA)
 
 3. **Dimensionality reduction**
    - PCA on selected atoms
 
 4. **Clustering / binning**
-   - structures grouped along a chosen CV
+   - Structures grouped along chosen CV
 
 5. **Matrix construction**
-   - RMSD matrix (JAX-accelerated)  
+   - RMSD matrix (JAX-accelerated)
    - CV difference matrix
 
 6. **Path optimisation**
-   - Monte Carlo simulated annealing
-   - objective combines:
-     - structural smoothness (RMSD)
+   - Monte Carlo simulated annealing (MCSA)
+   - Objective combines:
+     - Structural smoothness (RMSD)
      - CV smoothness / spacing
-     - optional orthogonal DOFs or density of states terms
+     - Optional orthogonal DOFs or density of states terms
 
 7. **Umbrella sampling setup**
-   - generate window structures
-   - embed into template system
-   - write PLUMED input files
+   - Generate window structures
+   - Embed into template system
+   - Write PLUMED input files
 
 ---
 
-## Module Overview
+## Files
 
-The repository is organised into a small set of modules corresponding to each stage of the workflow.
-
-### `calc_matrices.py`
-Construction of pairwise matrices used for path optimisation.
-
-- JAX-accelerated RMSD matrix computation
-- CV difference matrices (for ordering and spacing)
-- Optional similarity metrics (e.g. dihedral-based comparisons)
-
----
-
-### `monte_carlo.py`
-Monte Carlo optimisation of pathways through the ensemble.
-
-- Simulated annealing over discrete structure selections
-- Composite objective function combining:
-  - RMSD smoothness (structural continuity)
-  - CV smoothness (even window spacing)
-  - optional orthogonal DOFs and density terms
+| File | Description |
+|---|---|
+| `calc_matrices.py` | Constructs pairwise RMSD and CV-difference matrices (JAX-accelerated) |
+| `monte_carlo.py` | Monte Carlo simulated annealing for path optimisation |
+| `us_window_setup.py` | Embeds structures and prepares umbrella sampling inputs |
+| `misc_functions.py` | Utility functions (RMSD, SASA, distance CVs) |
+| `smart_selector.py` | DSSP-based intelligent atom selection |
 
 ---
 
-### `us_window_setup.py`
-Preparation of umbrella sampling systems.
+## Dependencies
 
-- Alignment of structures to a template system
-- Coordinate replacement into a simulation-ready topology
-- PLUMED input file generation (PCA or distance CVs)
-- Heuristic fixes for clashes and geometric artefacts
+### Core
 
----
+- numpy  
+- pandas  
+- matplotlib  
+- seaborn  
+- MDAnalysis  
+- Biopython  
 
-### `misc_functions.py`
-Utility functions for structural analysis.
+### Optional (performance)
 
-- RMSD to reference structures
-- SASA calculations
-- Distance-based collective variables
+- jax  
+- jaxlib  
 
----
+### Utilities
 
-### `smart_selector.py`
-Automatic generation of atom selection strings.
-
-- Uses DSSP-derived secondary structure to "intelligently" define selections
-- Allows inclusion/exclusion of specific residues
+- tqdm (progress bars)  
+- IPython (display utilities)  
 
 ---
 
@@ -114,3 +100,10 @@ Clone and add to your Python path:
 git clone <repo_url>
 cd <repo>
 export PYTHONPATH=$PYTHONPATH:$(pwd)
+```
+
+---
+
+#### Acknowledgements 
+
+Project based on the [Computational Molecular Science Python Cookiecutter](https://github.com/molssi/cookiecutter-cms) version 1.1.
