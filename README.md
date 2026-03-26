@@ -4,6 +4,8 @@ A notebook-driven workflow for using **synthetic ensembles** of AlphaFold predic
 
 The idea is to treat the **synthetic ensemble** as a coarse or approximate prior, and to recover the thermodynamics of the real ensemble using enhanced sampling.
 
+Spiritual successor to [MEMENTO](https://github.com/simonlichtinger/PyMEMENTO).
+
 ---
 
 ## Overview
