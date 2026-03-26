@@ -1,8 +1,8 @@
 # ensemblr
 
-A notebook-driven workflow for using **AlphaFold (AF) structural ensembles** to construct collective variables (CVs) and generate umbrella sampling (US) setups.
+A notebook-driven workflow for using **synthetic ensembles** of AlphaFold predictions to derive collective variables (CVs) and generate umbrella sampling (US) setups.
 
-The idea is to treat the **synthetic ensemble** as a coarse or approximate prior, and to recover the thermodynamics of the **real ensemble** using enhanced sampling.
+The idea is to treat the **synthetic ensemble** as a coarse or approximate prior, and to recover the thermodynamics of the real ensemble using enhanced sampling.
 
 ---
 
