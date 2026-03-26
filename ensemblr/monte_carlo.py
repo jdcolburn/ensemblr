@@ -1,22 +1,7 @@
-"""MC path finding by exchanging structures within bins."""
+# MC path finding by exchanging structures within bins
 
-import os
-import warnings
-import numpy as np
-import pandas as pd
-import matplotlib.pyplot as plt
-import MDAnalysis as mda
-import seaborn as sns
-import nglview as nv                            # for visualisation
-from MDAnalysis.analysis.align import alignto   # for aligning structures
-from MDAnalysis.analysis.pca import PCA         # for PCA
-from Bio.PDB import PDBParser
-from Bio.PDB.DSSP import DSSP                   # for secondary structure selection
-from Bio.PDB.SASA import ShrakeRupley           # for SASA calculation
-from IPython.display import display             # for data frame display
-from multiprocessing import Pool                # for multiprocessing
-from tqdm import tqdm                           # for progress bars
 import gc
+import numpy as np
 
 # function to calculate the energy of a given path 
 def calc_energy(path, rmsd_matrix, cv_matrix, dataframe, odf_matrix=None, dos_matrix=None, wf_rmsd=0.1, wf_cv=1, wf_odf=1, wf_dos=0.1):   #  wf_rmsd=0.01, wf_cv=1, wf_odf=0.5, wf_dos=0.001

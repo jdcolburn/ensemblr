@@ -1,15 +1,15 @@
-# alternate faster way to calculate rmsd matrix
+# Matrix calculation and handling functions
+
+import numpy as np
 
 import jax
-import matplotlib.pyplot as plt
 import jax.numpy as jnp
-import numpy as np
-import jax
+from jax import jit
+
 from Bio.PDB import PDBParser
 
-def test():
-    print('Hello world')
-
+import MDAnalysis as mda
+from MDAnalysis.analysis.dihedrals import Janin
 
 def get_rmsdmat_jax(ensemble_pdb, ensemble_dataframe):
 
@@ -45,7 +45,7 @@ def get_rmsdmat_jax(ensemble_pdb, ensemble_dataframe):
 def pdb_to_coordinates(pdb_file):
     
     """
-    Robbie - fill in these docs please.
+    Extract atomic coordinates from a PDB file into a NumPy array.
 
     Parameters
     ----------
@@ -77,15 +77,25 @@ def pdb_to_coordinates(pdb_file):
 def jnp_kabsch(a, b):
 
     """
-    Robbie - fill in these docs please.
+    Compute the optimal rotation matrix that aligns two point sets
+    using the Kabsch algorithm.
 
     Parameters
     ----------
-    ?
+    a : jax.numpy.ndarray, shape (N, 3)
+        Reference coordinate set. Coordinates should be centred
+        (i.e., centroid removed) prior to calling this function.
+    b : jax.numpy.ndarray, shape (N, 3)
+        Coordinate set to be aligned to `a`. Must correspond one-to-one
+        with `a` and also be centred.
 
     Returns
     -------
-    ?
+    R : jax.numpy.ndarray, shape (3, 3)
+        Optimal rotation matrix that minimizes the RMSD between `a`
+        and `b`, such that:
+            a ≈ b @ R
+
     """
 
     u, s, vh = jnp.linalg.svd(a.T @ b, full_matrices=False)
@@ -95,15 +105,21 @@ def jnp_kabsch(a, b):
 def jnp_rmsd(true, pred):
         
     """
-    Robbie - fill in these docs please.
+    Compute the root-mean-square deviation (RMSD) between two coordinate
+    sets after optimal rigid-body alignment.
 
     Parameters
     ----------
-    ?
+    true : jax.numpy.ndarray, shape (N, 3)
+        Reference coordinates. Each row corresponds to a point (e.g., atom).
+    pred : jax.numpy.ndarray, shape (N, 3)
+        Coordinates to compare against `true`. Must have a one-to-one
+        correspondence with `true`.
 
     Returns
     -------
-    ?
+    rmsd : float
+        Root-mean-square deviation between the aligned coordinate sets.
     """
 
     p = true - true.mean(0,keepdims=True)
@@ -160,3 +176,82 @@ def get_summat(dataframe, property_name):
         for j in range(len(dataframe)):
             matrix[i,j] = (dataframe[property_name].iloc[i] + dataframe[property_name].iloc[j])
     return matrix
+
+# JIT-compiled cosine similarity computation using JAX
+@jit
+def compute_cosine_similarity(u1_angles, u2_angles):
+    """
+    Compute cosine similarity between two angle arrays using JAX.
+
+    Parameters:
+    - u1_angles: JAX array, flattened angle array of the first structure.
+    - u2_angles: JAX array, flattened angle array of the second structure.
+
+    Returns:
+    - cosine_similarity: float, similarity between the two angle sets.
+    """
+    dot_product = jnp.dot(u1_angles, u2_angles)
+    norm_u1 = jnp.linalg.norm(u1_angles)
+    norm_u2 = jnp.linalg.norm(u2_angles)
+    return dot_product / (norm_u1 * norm_u2)
+
+# Function to compute cosine similarity between two structures
+def get_janin_similarity(structure_directory, structure1, structure2, selection='protein'):
+    """
+    Calculate the cosine similarity between Janin angle sets of two protein structures.
+
+    Parameters:
+    - structure_directory: str, directory containing the structure files.
+    - structure1: str, filename of the first structure.
+    - structure2: str, filename of the second structure.
+    - selection: str, atom selection string for MDAnalysis (default: 'protein').
+
+    Returns:
+    - cosine_similarity: float, similarity between the two angle sets.
+    """
+    # Load structures into MDAnalysis Universes
+    u1 = mda.Universe(structure_directory + structure1, structure_directory + structure1)
+    janin_u1 = Janin(u1.select_atoms(selection))
+    u2 = mda.Universe(structure_directory + structure2, structure_directory + structure2)
+    janin_u2 = Janin(u2.select_atoms(selection))
+    
+    # Run the Janin analysis
+    janin_u1.run()
+    janin_u2.run()
+    
+    # Extract and flatten angle sets
+    u1_flattened = jnp.array(janin_u1.angles.flatten())  # Convert to JAX array
+    u2_flattened = jnp.array(janin_u2.angles.flatten())  # Convert to JAX array
+    
+    # Compute cosine similarity using JAX JIT
+    return compute_cosine_similarity(u1_flattened, u2_flattened)
+
+# Function to compute pairwise similarity matrix using JAX
+def get_janin_overlap_matrix(dataframe, structure_directory):
+    """
+    Compute a pairwise cosine similarity matrix for all structures in a dataframe using JAX.
+
+    Parameters:
+    - dataframe: pandas.DataFrame, contains structure filenames in the 'structure' column.
+    - structure_directory: str, directory containing the structure files.
+
+    Returns:
+    - matrix: np.ndarray, pairwise similarity matrix of shape (n_structures, n_structures).
+    """
+    # Initialize an empty square matrix for storing pairwise similarities
+    n_structures = len(dataframe)
+    matrix = np.zeros((n_structures, n_structures))
+    
+    # Compute pairwise similarities with JAX JIT
+    for i in range(n_structures):
+        for j in range(i, n_structures):  # Upper triangular only (symmetry optimization)
+            similarity = get_janin_similarity(
+                structure_directory,
+                dataframe.iloc[i]['structure'],
+                dataframe.iloc[j]['structure']
+            )
+            matrix[i, j] = similarity
+            matrix[j, i] = similarity  # Exploit symmetry
+    
+    return matrix
+

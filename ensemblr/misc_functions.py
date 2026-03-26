@@ -1,21 +1,14 @@
-import os
-import warnings
-import numpy as np
-import pandas as pd
-import matplotlib.pyplot as plt
-import MDAnalysis as mda
-import seaborn as sns
-import nglview as nv                            # for visualisation
-from MDAnalysis.analysis.align import alignto   # for aligning structures
-from MDAnalysis.analysis.pca import PCA         # for PCA
-from Bio.PDB import PDBParser
-from Bio.PDB.DSSP import DSSP                   # for secondary structure selection
-from Bio.PDB.SASA import ShrakeRupley           # for SASA calculation
-from IPython.display import display             # for data frame display
-from multiprocessing import Pool                # for multiprocessing
-from tqdm import tqdm                           # for progress bars
+# Miscellaneous functions
 
-# define function to get rmsd to a structure
+import numpy as np
+
+import MDAnalysis as mda
+from MDAnalysis.analysis.align import alignto
+
+from Bio.PDB import PDBParser
+from Bio.PDB.SASA import ShrakeRupley
+
+# function to get rmsd to a structure
 def get_rmsd_to_ref(structure, ref_structure, selection, resid_offset=0):
     mobile = mda.Universe(structure, structure) # make universe
     ref = mda.Universe(ref_structure, ref_structure)    # make universe
@@ -23,7 +16,7 @@ def get_rmsd_to_ref(structure, ref_structure, selection, resid_offset=0):
     rmsds = alignto(mobile, ref, select=selection, match_atoms=True, weights=None)     # these ref selections are different becasue ref has different residue numbering
     return [structure, rmsds[1]]                                                            # [1] = rmsd after alignment
 
-# define a function to calculate the SASA of a structure
+# function to calculate the SASA of a structure
 def get_sasa(structure):
     p = PDBParser(QUIET=1)
     struct = p.get_structure(structure, structure)

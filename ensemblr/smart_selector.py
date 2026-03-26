@@ -1,15 +1,5 @@
-"""automatic "clever" selection definer."""
+# Automatic "clever" selection definer
 
-import os
-import warnings
-import numpy as np
-import pandas as pd
-import matplotlib.pyplot as plt
-import MDAnalysis as mda
-import seaborn as sns
-import nglview as nv                            # for visualisation
-from MDAnalysis.analysis.align import alignto   # for aligning structures
-from MDAnalysis.analysis.pca import PCA         # for PCA
 from Bio.PDB import PDBParser
 from Bio.PDB.DSSP import DSSP                   # for secondary structure selection
 

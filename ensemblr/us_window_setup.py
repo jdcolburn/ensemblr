@@ -1,11 +1,11 @@
-# set up umbrella sampling windows (for REUS)
+# Basic functions to set up umbrella sampling windows (for REUS, assumes CHARMM nomenclature)
+
+import os
+
+import numpy as np
 
 import MDAnalysis as mda
-import numpy as np
-import os
-from MDAnalysis.analysis import align, rms
-import shutil
-from MDAnalysis.analysis import distances
+from MDAnalysis.analysis import align, rms, distances
 from MDAnalysis.analysis.distances import distance_array
 
 def selection_parser(mda_selection, u_template):

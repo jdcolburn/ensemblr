@@ -1,6 +1,6 @@
-Metadata-Version: 2.1
+Metadata-Version: 2.2
 Name: ensemblr
-Version: 1.0.0+28.ga855d9a.dirty
+Version: 1.0.0+31.g7c3624d.dirty
 Summary: Tools for analysing AF2 ensembles
 Author-email: Jonathan Colburn <jonathan.colburn@bioch.ox.ac.uk>
 License: MIT
