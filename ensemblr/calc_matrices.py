@@ -9,7 +9,8 @@ from jax import jit
 from Bio.PDB import PDBParser
 
 import MDAnalysis as mda
-from MDAnalysis.analysis.dihedrals import Janin
+from MDAnalysis.analysis.dihedrals import Janin, Ramachandran
+from tqdm import tqdm
 
 def get_rmsdmat_jax(ensemble_pdb, ensemble_dataframe):
 
@@ -32,10 +33,9 @@ def get_rmsdmat_jax(ensemble_pdb, ensemble_dataframe):
     jnp_rmsd_parallel = jax.jit(jax.vmap(jnp_rmsd,(None,0)))
     data = ensemble_pdb
 
-    # populate the RMSD matrix
     results = []
-    for n in range(len(ensemble_dataframe)):
-      results.append(np.array(jnp_rmsd_parallel(data[n],data)))
+    for n in tqdm(range(len(ensemble_dataframe)), desc='RMSD matrix'):
+        results.append(np.array(jnp_rmsd_parallel(data[n], data)))
 
     # turn the "results" list into a numpy array float 64
     results = np.array(results, dtype=np.float32)
@@ -252,6 +252,71 @@ def get_janin_overlap_matrix(dataframe, structure_directory):
             )
             matrix[i, j] = similarity
             matrix[j, i] = similarity  # Exploit symmetry
-    
+
+    return matrix
+
+
+def _read_pdb_coords(path):
+    """Extract all ATOM/HETATM coordinates from a PDB using fixed column slicing.
+
+    Faster than building a full MDA Universe — safe for standard AF2 PDB output.
+    """
+    coords = []
+    with open(path) as f:
+        for line in f:
+            if line[:6] in ('ATOM  ', 'HETATM'):
+                coords.append((float(line[30:38]), float(line[38:46]), float(line[46:54])))
+    return np.array(coords, dtype=np.float32)
+
+
+def get_ramachandran_matrix(dataframe, structure_directory, selection='protein', chunk_size=64):
+    """
+    Compute a pairwise circular distance matrix in Ramachandran (φ/ψ) space.
+
+    Uses the metric d = sqrt(mean(2*(1-cos(Δθ)))) over all φ/ψ pairs, which
+    is the circular analogue of RMSD and correctly handles angle periodicity.
+    Values range from 0 (identical) to 2 (maximally different).
+
+    Parameters
+    ----------
+    dataframe : pandas.DataFrame
+        Must contain a 'structure' column with PDB filenames.
+    structure_directory : str
+        Directory containing the PDB files.
+    selection : str
+        MDAnalysis atom selection (default: 'protein').
+    chunk_size : int
+        Number of rows to process per chunk (controls peak memory use).
+
+    Returns
+    -------
+    matrix : np.ndarray, shape (n_structures, n_structures)
+        Pairwise Ramachandran circular distance matrix.
+    """
+    from MDAnalysis.coordinates.memory import MemoryReader
+
+    n = len(dataframe)
+    files = [structure_directory + f for f in dataframe.index]
+
+    # Build topology from the first structure only, then inject all coordinates
+    # via MemoryReader so Ramachandran runs once over N frames instead of N times.
+    u = mda.Universe(files[0])
+    all_coords = np.array(
+        [_read_pdb_coords(f) for f in tqdm(files, desc='Loading coordinates')]
+    )
+    u.load_new(all_coords, format=MemoryReader)
+
+    rama = Ramachandran(u.select_atoms(selection))
+    rama.run()
+    angles = np.deg2rad(rama.angles)  # (n, n_residues, 2)
+
+    # Compute pairwise matrix in chunks to avoid the (n, n, n_res, 2) broadcast
+    # that would require tens of GB for large ensembles.
+    matrix = np.zeros((n, n), dtype=np.float32)
+    for i in tqdm(range(0, n, chunk_size), desc='Rama matrix'):
+        end = min(i + chunk_size, n)
+        diff = angles[i:end, np.newaxis, :, :] - angles[np.newaxis, :, :, :]
+        matrix[i:end] = np.sqrt(np.mean(2.0 * (1.0 - np.cos(diff)), axis=(-2, -1)))
+
     return matrix
 

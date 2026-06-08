@@ -136,15 +136,35 @@ def generate_selection_token(reference_pdb_file, offset=0, conserved_residues=No
         #selection_from_ca_dist_diffmat = ','.join(selection_from_ca_dist_diffmat)
         #selection_from_ca_dist_diffmat = selection_from_ca_dist_diffmat.replace(',', ' or ')
 
-    # failsafe for valid token if nothing matching helices loops or sheets
+    # Build selection parts — skip empty categories to avoid invalid '() and ...' tokens
+    ss_parts = []
+    if selection_helices:
+        ss_parts.append('((' + selection_helices + ') and name CA)')
+    if selection_loops:
+        ss_parts.append('((' + selection_loops  + ') and name CA)')
+    if selection_sheets:
+        ss_parts.append('((' + selection_sheets + ') and name CA)')
 
-    # final rmsd_selection for analysis
-    rmsd_selection = '(  ( (' + selection_helices + ') and name CA ) or ( (' + selection_loops + ') and name CA )  or ( (' + selection_sheets + ') and name CA ) )'
-    if conserved_residues != None and conserved_residues != '':
-        rmsd_selection += ' or ( (' + selection_helices + ') and' + selection_conserved_residues + ')'
-    if excluded_residues != None and excluded_residues != '':
+    if ss_parts:
+        rmsd_selection = '(' + ' or '.join(ss_parts) + ')'
+    elif explicitly_include is not None and explicitly_include != '':
+        # No DSSP secondary structure found (e.g. short peptide); rely solely on always_include
+        rmsd_selection = '((' + explicitly_include + ') and name CA)'
+        if excluded_residues is not None and excluded_residues != '':
+            rmsd_selection += ' and not (' + excluded_residues + ')'
+        return rmsd_selection
+    else:
+        # Ultimate fallback: all CA atoms
+        rmsd_selection = 'name CA'
+        if excluded_residues is not None and excluded_residues != '':
+            rmsd_selection = '(' + rmsd_selection + ') and not (' + excluded_residues + ')'
+        return rmsd_selection
+
+    if conserved_residues is not None and conserved_residues != '' and selection_helices:
+        rmsd_selection += ' or ((' + selection_helices + ') and ' + selection_conserved_residues + ')'
+    if excluded_residues is not None and excluded_residues != '':
         rmsd_selection += ' and not (' + excluded_residues + ')'
-    if explicitly_include != None and explicitly_include != '':
-        rmsd_selection += ' or ((' + explicitly_include + ') and name CA )'
+    if explicitly_include is not None and explicitly_include != '':
+        rmsd_selection += ' or ((' + explicitly_include + ') and name CA)'
 
-    return(rmsd_selection)
+    return rmsd_selection

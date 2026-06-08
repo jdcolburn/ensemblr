@@ -19,6 +19,7 @@ system-builder.ipynb
 ensemblr.ipynb
 ctns_notebook_tinkering.ipynb
 example_notebook_testing.ipynb
+example_notebook.ipynb
 
 # Unit test / coverage reports
 htmlcov/

@@ -9,7 +9,7 @@ desired_models_per_run=2000
 seed="$RANDOM"
 num_seeds=$((desired_models_per_run / 5))
 
-flags="--random-seed $seed --num-seeds $num_seeds --num-models 5 --num-recycle 1 --use-dropout --amber --relax-max-iterations 100 --use-gpu-relax --rank plddt"
+flags="--random-seed $seed --num-seeds $num_seeds --num-models 5 --num-recycle 1 --use-dropout --amber --relax-max-iterations 100 --rank plddt"
 
 echo $flags
 
