@@ -122,3 +122,67 @@ def plumed_input_writer(cv_window_values, output_file='plumed.dat', force_consta
             # write the single cv value
             f.write(str(cv_window_values) + '\n')
             f.write(f'\nPRINT ARG={print_arg} FILE=COLVAR\n\n')
+
+
+def plumed_input_writer_2d(cv1_window_values, cv2_window_values,
+                            cv1_reference_pdb, cv2_reference_pdb,
+                            molinfo_pdb, scale_factor=1,
+                            force_constant=1000, multidir=False,
+                            output_file='plumed.dat'):
+    """
+    Write a PLUMED input file for 2D umbrella sampling with two PCA CVs.
+
+    Writes two PCAVARS projections (PC1 and PC2) and applies one harmonic
+    restraint per CV per window.
+
+    Parameters
+    ----------
+    cv1_window_values : float or array-like
+        PC1 target value(s).  Pass an array when multidir=True.
+    cv2_window_values : float or array-like
+        PC2 target value(s).  Pass an array when multidir=True.
+    cv1_reference_pdb : str
+        Path to the PLUMED PCA reference PDB for PC1 (eigenvector in B-factors).
+    cv2_reference_pdb : str
+        Path to the PLUMED PCA reference PDB for PC2.
+    molinfo_pdb : str
+        Path to the PDB used for MOLINFO.
+    scale_factor : int
+        Number of PCA atoms — PLUMED divides the projection by this value,
+        so multiplying by it restores the original PC units.
+    force_constant : float
+        Harmonic restraint force constant (kJ mol⁻¹ nm⁻²).
+    multidir : bool
+        If True, write @replicas: syntax for GROMACS multidir simulations.
+    output_file : str
+
+    Returns
+    -------
+    None
+    """
+    cv1_ref_name = os.path.basename(cv1_reference_pdb)
+    cv2_ref_name = os.path.basename(cv2_reference_pdb)
+    molinfo_name = os.path.basename(molinfo_pdb)
+
+    with open(output_file, 'w') as f:
+        f.write('UNITS LENGTH=A\n\n')
+        f.write(f'MOLINFO STRUCTURE=../window_0/{molinfo_name}\n\n')
+        f.write(f'pcproj1: PCAVARS REFERENCE=../{cv1_ref_name} TYPE=OPTIMAL\n')
+        f.write(f'pcproj2: PCAVARS REFERENCE=../{cv2_ref_name} TYPE=OPTIMAL\n\n')
+        f.write(f'CV1: MATHEVAL ARG=pcproj1.eig-1 FUNC=x*{scale_factor} PERIODIC=NO\n')
+        f.write(f'CV2: MATHEVAL ARG=pcproj2.eig-1 FUNC=x*{scale_factor} PERIODIC=NO\n\n')
+
+        if multidir:
+            cv1_str = ','.join(f'{v:.4f}' for v in cv1_window_values)
+            cv2_str = ','.join(f'{v:.4f}' for v in cv2_window_values)
+            f.write(f'restraint_pc1: RESTRAINT ARG=CV1 KAPPA={force_constant} '
+                    f'AT=@replicas:{cv1_str}\n')
+            f.write(f'restraint_pc2: RESTRAINT ARG=CV2 KAPPA={force_constant} '
+                    f'AT=@replicas:{cv2_str}\n\n')
+            f.write('PRINT ARG=CV1,CV2,restraint_pc1.*,restraint_pc2.* FILE=COLVAR_MULTI\n')
+        else:
+            f.write(f'restraint_pc1: RESTRAINT ARG=CV1 KAPPA={force_constant} '
+                    f'AT={cv1_window_values:.4f}\n')
+            f.write(f'restraint_pc2: RESTRAINT ARG=CV2 KAPPA={force_constant} '
+                    f'AT={cv2_window_values:.4f}\n\n')
+            f.write('PRINT ARG=CV1,CV2,restraint_pc1.*,restraint_pc2.* FILE=COLVAR\n')

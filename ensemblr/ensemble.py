@@ -459,7 +459,7 @@ class Ensemble:
 
     # ── Matrices ──────────────────────────────────────────────────────────────
 
-    def compute_matrices(self, cv_column='PC1', cv2_column=None, step_matrix='rmsd'):
+    def compute_matrices(self, cv_column='PC1', cv2_column=None, step_matrix='rmsd', sparse=False):
         """
         Compute the pairwise step-cost matrix and CV difference matrix.
         Stores results in self.cv_matrix (and optionally self.cv2_matrix), plus
@@ -473,6 +473,11 @@ class Ensemble:
             Column for an optional second CV (stored as self.cv2_matrix).
         step_matrix : {'rmsd', 'rama'}
             Which pairwise step-cost matrix to compute.
+        sparse : bool
+            If True, only compute matrix entries for structures in adjacent bins
+            (ordered by mean CV), leaving all other entries as 0. Requires that
+            MCPathFinder.bin_structures() has already been called so that self.df
+            contains a 'bin' column. Default False (full dense matrix).
 
         Returns
         -------
@@ -480,18 +485,28 @@ class Ensemble:
         """
         if self._ensemble_pdb is None:
             raise RuntimeError('Call run_pca() before compute_matrices()')
+        if sparse and 'bin' not in self.df.columns:
+            raise RuntimeError(
+                'sparse=True requires bin assignments — call MCPathFinder.bin_structures() first'
+            )
 
         self.cv_matrix = get_diffmat(self.df, cv_column)
         if cv2_column:
             self.cv2_matrix = get_diffmat(self.df, cv2_column)
 
         if step_matrix == 'rama':
-            self.rama_matrix = get_ramachandran_matrix(self.df, self.structure_directory)
+            self.rama_matrix = get_ramachandran_matrix(
+                self.df, self.structure_directory,
+                sparse=sparse, cv_column=cv_column,
+            )
             print(f'Matrices computed — Rama: {self.rama_matrix.shape}, '
                   f'CV ({cv_column}): {self.cv_matrix.shape}')
         else:
             coords = pdb_to_coordinates(self._ensemble_pdb)
-            self.rmsd_matrix = get_rmsdmat_jax(coords, self.df)
+            self.rmsd_matrix = get_rmsdmat_jax(
+                coords, self.df,
+                sparse=sparse, cv_column=cv_column,
+            )
             print(f'Matrices computed — RMSD: {self.rmsd_matrix.shape}, '
                   f'CV ({cv_column}): {self.cv_matrix.shape}')
         return self

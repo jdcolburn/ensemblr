@@ -12,35 +12,60 @@ import MDAnalysis as mda
 from MDAnalysis.analysis.dihedrals import Janin, Ramachandran
 from tqdm import tqdm
 
-def get_rmsdmat_jax(ensemble_pdb, ensemble_dataframe):
+def _get_neighbor_bin_indices(df, cv_column):
+    """Return list of (idxs_a, idxs_b) int arrays for each adjacent bin pair, ordered by mean CV."""
+    idx = {s: i for i, s in enumerate(df.index)}
+    bin_order = df.groupby('bin')[cv_column].mean().sort_values().index.tolist()
+    pairs = []
+    for k in range(len(bin_order) - 1):
+        a = np.array([idx[s] for s in df.index[df['bin'] == bin_order[k]]])
+        b = np.array([idx[s] for s in df.index[df['bin'] == bin_order[k + 1]]])
+        pairs.append((a, b))
+    return pairs
+
+
+def get_rmsdmat_jax(ensemble_pdb, ensemble_dataframe, sparse=False, cv_column=None):
 
     """
     Calculate RMSD matrix for the ensemble using jax.
 
     Parameters
     ----------
-    ensemble_coordinates : numpy array, Required, default: None
-        array consisting of the coordinates of teh entire ensemble of structures
-    ensemble_dataframe : pandas dataframe, Required, default: None
-        the pandas dataframe with all the structures in the ensemble.
+    ensemble_pdb : numpy array
+        Coordinate array of shape (N, n_atoms, 3) for the entire ensemble.
+    ensemble_dataframe : pandas dataframe
+        The ensemble dataframe. Must contain a 'bin' column when sparse=True.
+    sparse : bool
+        If True, only compute entries for structures in adjacent bins (ordered
+        by mean cv_column). All other entries are left as 0. Requires cv_column.
+    cv_column : str, optional
+        Column in ensemble_dataframe used to order bins. Required when sparse=True.
 
     Returns
     -------
-    results : numpy array
+    results : numpy array, shape (N, N), dtype float32
         The resulting RMSD matrix.
     """
 
-    jnp_rmsd_parallel = jax.jit(jax.vmap(jnp_rmsd,(None,0)))
     data = ensemble_pdb
+    n = len(ensemble_dataframe)
+    matrix = np.zeros((n, n), dtype=np.float32)
 
-    results = []
-    for n in tqdm(range(len(ensemble_dataframe)), desc='RMSD matrix'):
-        results.append(np.array(jnp_rmsd_parallel(data[n], data)))
+    if sparse:
+        if cv_column is None:
+            raise ValueError('cv_column is required when sparse=True')
+        jnp_rmsd_block = jax.jit(jax.vmap(jax.vmap(jnp_rmsd, (None, 0)), (0, None)))
+        bin_pairs = _get_neighbor_bin_indices(ensemble_dataframe, cv_column)
+        for idxs_a, idxs_b in tqdm(bin_pairs, desc='RMSD matrix (sparse)'):
+            block = np.array(jnp_rmsd_block(data[idxs_a], data[idxs_b]))
+            matrix[np.ix_(idxs_a, idxs_b)] = block
+            matrix[np.ix_(idxs_b, idxs_a)] = block.T
+    else:
+        jnp_rmsd_parallel = jax.jit(jax.vmap(jnp_rmsd, (None, 0)))
+        for i in tqdm(range(n), desc='RMSD matrix'):
+            matrix[i] = np.array(jnp_rmsd_parallel(data[i], data))
 
-    # turn the "results" list into a numpy array float 64
-    results = np.array(results, dtype=np.float32)
-
-    return results
+    return matrix
 
 def pdb_to_coordinates(pdb_file):
     
@@ -269,7 +294,8 @@ def _read_pdb_coords(path):
     return np.array(coords, dtype=np.float32)
 
 
-def get_ramachandran_matrix(dataframe, structure_directory, selection='protein', chunk_size=64):
+def get_ramachandran_matrix(dataframe, structure_directory, selection='protein', chunk_size=64,
+                            sparse=False, cv_column=None):
     """
     Compute a pairwise circular distance matrix in Ramachandran (φ/ψ) space.
 
@@ -280,13 +306,19 @@ def get_ramachandran_matrix(dataframe, structure_directory, selection='protein',
     Parameters
     ----------
     dataframe : pandas.DataFrame
-        Must contain a 'structure' column with PDB filenames.
+        Must contain a 'structure' column with PDB filenames. Must contain a
+        'bin' column when sparse=True.
     structure_directory : str
         Directory containing the PDB files.
     selection : str
         MDAnalysis atom selection (default: 'protein').
     chunk_size : int
-        Number of rows to process per chunk (controls peak memory use).
+        Number of rows to process per chunk (controls peak memory; dense mode only).
+    sparse : bool
+        If True, only compute entries for structures in adjacent bins (ordered
+        by mean cv_column). All other entries are left as 0. Requires cv_column.
+    cv_column : str, optional
+        Column in dataframe used to order bins. Required when sparse=True.
 
     Returns
     -------
@@ -294,6 +326,9 @@ def get_ramachandran_matrix(dataframe, structure_directory, selection='protein',
         Pairwise Ramachandran circular distance matrix.
     """
     from MDAnalysis.coordinates.memory import MemoryReader
+
+    if sparse and cv_column is None:
+        raise ValueError('cv_column is required when sparse=True')
 
     n = len(dataframe)
     files = [structure_directory + f for f in dataframe.index]
@@ -310,13 +345,22 @@ def get_ramachandran_matrix(dataframe, structure_directory, selection='protein',
     rama.run()
     angles = np.deg2rad(rama.angles)  # (n, n_residues, 2)
 
-    # Compute pairwise matrix in chunks to avoid the (n, n, n_res, 2) broadcast
-    # that would require tens of GB for large ensembles.
     matrix = np.zeros((n, n), dtype=np.float32)
-    for i in tqdm(range(0, n, chunk_size), desc='Rama matrix'):
-        end = min(i + chunk_size, n)
-        diff = angles[i:end, np.newaxis, :, :] - angles[np.newaxis, :, :, :]
-        matrix[i:end] = np.sqrt(np.mean(2.0 * (1.0 - np.cos(diff)), axis=(-2, -1)))
+
+    if sparse:
+        bin_pairs = _get_neighbor_bin_indices(dataframe, cv_column)
+        for idxs_a, idxs_b in tqdm(bin_pairs, desc='Rama matrix (sparse)'):
+            diff = angles[idxs_a][:, np.newaxis, :, :] - angles[idxs_b][np.newaxis, :, :, :]
+            block = np.sqrt(np.mean(2.0 * (1.0 - np.cos(diff)), axis=(-2, -1)))
+            matrix[np.ix_(idxs_a, idxs_b)] = block
+            matrix[np.ix_(idxs_b, idxs_a)] = block.T
+    else:
+        # Compute pairwise matrix in chunks to avoid the (n, n, n_res, 2) broadcast
+        # that would require tens of GB for large ensembles.
+        for i in tqdm(range(0, n, chunk_size), desc='Rama matrix'):
+            end = min(i + chunk_size, n)
+            diff = angles[i:end, np.newaxis, :, :] - angles[np.newaxis, :, :, :]
+            matrix[i:end] = np.sqrt(np.mean(2.0 * (1.0 - np.cos(diff)), axis=(-2, -1)))
 
     return matrix
 

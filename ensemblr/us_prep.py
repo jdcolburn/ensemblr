@@ -8,7 +8,7 @@ from tqdm import tqdm
 from .structure_prep import (align_universe, protein_coordinate_replacer,
                               write_pca_ref_pdb, fix_overlapping_atoms,
                               prevent_threaded_lipids, fix_long_bonds)
-from .plumed import plumed_input_writer
+from .plumed import plumed_input_writer, plumed_input_writer_2d
 
 
 class UmbrellaSamplingPrep:
@@ -258,3 +258,206 @@ class UmbrellaSamplingPrep:
                 force_constant=force_constant,
                 output_file=os.path.join(window_dir, 'plumed.dat'),
             )
+
+
+class GridUmbrellaSamplingPrep:
+    """
+    Embeds grid structures into a membrane/solvent template and writes
+    2D PLUMED input files for umbrella sampling on a (PC1, PC2) grid.
+
+    Typical usage::
+
+        prep = GridUmbrellaSamplingPrep(grid_finder, ensemble,
+                                        template_pdb='template.pdb',
+                                        output_dir='us_2d/')
+        prep.prepare_windows()
+        prep.write_plumed_input()
+    """
+
+    def __init__(self, grid_finder, ensemble, template_pdb, output_dir):
+        """
+        Parameters
+        ----------
+        grid_finder : GridPathFinder
+            A completed GridPathFinder (run() already called).
+        ensemble : Ensemble
+            The parent Ensemble (needs pca and rmsd_selection set).
+        template_pdb : str
+            Path to a template PDB (protein + membrane + solvent).
+        output_dir : str
+            Root directory for window subdirectories and PLUMED files.
+        """
+        self.grid_finder = grid_finder
+        self.ensemble = ensemble
+        self.template_pdb = template_pdb
+        self.output_dir = output_dir.rstrip('/') + '/'
+        self._window_dirs = []
+        self._window_targets = []   # [(structure, pc1_val, pc2_val), ...]
+        self._u_template = None
+        self._ref_for_plumed = None
+
+    def prepare_windows(self, resid_offset=0, aln_selection='name CA',
+                        lipid_selection='resname DLPC', fix_bond_thresh=10.0):
+        """
+        Create one window_N/ directory per active grid cell, embed each
+        structure into the template, and apply geometry fixes.
+
+        Windows are numbered sequentially in (bin_i, bin_j) order; the
+        mapping to grid coordinates is written to window_map.csv.
+
+        Parameters
+        ----------
+        resid_offset : int
+        aln_selection : str
+        lipid_selection : str
+        fix_bond_thresh : float
+
+        Returns
+        -------
+        self
+        """
+        os.makedirs(self.output_dir, exist_ok=True)
+        targets = self.grid_finder.get_window_targets()
+        self._window_targets = targets
+
+        u_template = mda.Universe(self.template_pdb, self.template_pdb)
+        self._u_template = u_template
+        self._window_dirs = []
+
+        for i, (structure, pc1_val, pc2_val) in enumerate(
+                tqdm(targets, desc='Preparing windows')):
+            window_dir = os.path.join(self.output_dir, f'window_{i}')
+            os.makedirs(window_dir, exist_ok=True)
+            self._window_dirs.append(window_dir)
+
+            shutil.copy(self.ensemble.structure_directory + structure, window_dir)
+
+            u = u_template.copy()
+            full_path = self.ensemble.structure_directory + structure
+            u_structure = mda.Universe(full_path, full_path)
+            u_structure = align_universe(u_structure, u, aln_selection)
+
+            protein_coordinate_replacer(
+                u_structure, u,
+                resid_offset=resid_offset,
+                selection_token='protein and chainID A',
+            )
+            prevent_threaded_lipids(u, selection_token=lipid_selection)
+            fix_long_bonds(u, thresh=fix_bond_thresh, fudge_dist=1)
+            fix_overlapping_atoms(
+                u,
+                selection_token='protein or (around 10 protein)',
+                tolerance=0.2, step=0.1,
+            )
+            u.atoms.write(os.path.join(window_dir, f'window_{i}.pdb'))
+
+        # write the grid → window index mapping for downstream analysis
+        self.grid_finder.write_grid_summary(
+            os.path.join(self.output_dir, 'window_map.csv'))
+
+        self._ref_for_plumed = os.path.join(self._window_dirs[0], 'window_0.pdb')
+        return self
+
+    def write_plumed_input(self, force_constant=1000, resid_offset=0):
+        """
+        Write per-window plumed.dat files and a combined plumed_multidir.dat
+        with two PCA restraints (PC1 and PC2).
+
+        Parameters
+        ----------
+        force_constant : float
+            Harmonic restraint force constant (kJ mol⁻¹ nm⁻²).
+        resid_offset : int
+
+        Returns
+        -------
+        self
+        """
+        if self._ref_for_plumed is None:
+            raise RuntimeError('Call prepare_windows() before write_plumed_input()')
+        if self.ensemble.pca is None:
+            raise RuntimeError('PCA not available on Ensemble — call run_pca() first')
+
+        cv1 = self.grid_finder.cv1
+        cv2 = self.grid_finder.cv2
+        pc1_idx = int(cv1[2:]) - 1 if cv1.startswith('PC') and cv1[2:].isdigit() else 0
+        pc2_idx = int(cv2[2:]) - 1 if cv2.startswith('PC') and cv2[2:].isdigit() else 1
+
+        ev1 = self.ensemble.pca.p_components[:, pc1_idx].reshape(-1, 3)
+        ev2 = self.ensemble.pca.p_components[:, pc2_idx].reshape(-1, 3)
+        pca_mean = self.ensemble.pca.mean.reshape(-1, 3)
+        n_pca_atoms = len(ev1)
+
+        u_avg = self._u_template.copy()
+        u_avg.trajectory[0]
+        if resid_offset:
+            u_avg.select_atoms('protein').residues.resids -= resid_offset
+
+        template_sel = u_avg.select_atoms(self.ensemble.rmsd_selection)
+        n_template = len(template_sel)
+
+        if n_template != n_pca_atoms:
+            u_ref = mda.Universe(
+                self.ensemble.structure_directory + self.ensemble.df.index[0],
+                self.ensemble.structure_directory + self.ensemble.df.index[0],
+            )
+            ens_sel = u_ref.select_atoms(self.ensemble.rmsd_selection)
+            tmpl_id_set = set(zip(template_sel.resids.tolist(), template_sel.names.tolist()))
+            mask = np.array(
+                [(r, n) in tmpl_id_set
+                 for r, n in zip(ens_sel.resids.tolist(), ens_sel.names.tolist())]
+            )
+            if mask.sum() != n_template:
+                raise RuntimeError(
+                    f"PCA selection has {n_pca_atoms} atoms but template has "
+                    f"{n_template} after offset correction; only {mask.sum()} "
+                    f"(resid, atom-name) pairs match. Check template PDB coverage "
+                    f"and resid_offset."
+                )
+            print(f"  Note: template covers {n_template}/{n_pca_atoms} PCA atoms — "
+                  f"subsetting eigenvectors.")
+            pca_mean = pca_mean[mask]
+            ev1 = ev1[mask]
+            ev2 = ev2[mask]
+            n_pca_atoms = n_template
+
+        template_sel.positions = pca_mean
+        u_avg.atoms.write(os.path.join(self.output_dir, 'average_structure.pdb'))
+
+        pca_ref_pc1 = os.path.join(self.output_dir, 'pca_ref_pc1.pdb')
+        pca_ref_pc2 = os.path.join(self.output_dir, 'pca_ref_pc2.pdb')
+
+        write_pca_ref_pdb(
+            u_structure=u_avg, u_template=self._u_template.copy(),
+            eigenvector=ev1, pca_selection_token=self.ensemble.rmsd_selection,
+            offset=resid_offset, output_file=pca_ref_pc1,
+        )
+        write_pca_ref_pdb(
+            u_structure=u_avg, u_template=self._u_template.copy(),
+            eigenvector=ev2, pca_selection_token=self.ensemble.rmsd_selection,
+            offset=resid_offset, output_file=pca_ref_pc2,
+        )
+
+        pc1_values = np.array([t[1] for t in self._window_targets])
+        pc2_values = np.array([t[2] for t in self._window_targets])
+
+        plumed_input_writer_2d(
+            cv1_window_values=pc1_values, cv2_window_values=pc2_values,
+            cv1_reference_pdb=pca_ref_pc1, cv2_reference_pdb=pca_ref_pc2,
+            molinfo_pdb=self._ref_for_plumed,
+            scale_factor=n_pca_atoms, force_constant=force_constant,
+            multidir=True,
+            output_file=os.path.join(self.output_dir, 'plumed_multidir.dat'),
+        )
+        for i, (window_dir, (_, pc1_val, pc2_val)) in enumerate(
+                zip(self._window_dirs, self._window_targets)):
+            plumed_input_writer_2d(
+                cv1_window_values=pc1_val, cv2_window_values=pc2_val,
+                cv1_reference_pdb='../pca_ref_pc1.pdb',
+                cv2_reference_pdb='../pca_ref_pc2.pdb',
+                molinfo_pdb=self._ref_for_plumed,
+                scale_factor=n_pca_atoms, force_constant=force_constant,
+                multidir=False,
+                output_file=os.path.join(window_dir, 'plumed.dat'),
+            )
+        return self
