@@ -340,18 +340,23 @@ def get_ramachandran_matrix(dataframe, structure_directory, selection='protein',
         [_read_pdb_coords(f) for f in tqdm(files, desc='Loading coordinates')]
     )
     u.load_new(all_coords, format=MemoryReader)
+    del all_coords  # free before the heavy angle computation
 
     rama = Ramachandran(u.select_atoms(selection))
     rama.run()
-    angles = np.deg2rad(rama.angles)  # (n, n_residues, 2)
+    angles = np.deg2rad(rama.angles).astype(np.float32)  # (n, n_residues, 2)
 
     matrix = np.zeros((n, n), dtype=np.float32)
 
     if sparse:
         bin_pairs = _get_neighbor_bin_indices(dataframe, cv_column)
         for idxs_a, idxs_b in tqdm(bin_pairs, desc='Rama matrix (sparse)'):
-            diff = angles[idxs_a][:, np.newaxis, :, :] - angles[idxs_b][np.newaxis, :, :, :]
-            block = np.sqrt(np.mean(2.0 * (1.0 - np.cos(diff)), axis=(-2, -1)))
+            na, nb = len(idxs_a), len(idxs_b)
+            block = np.zeros((na, nb), dtype=np.float32)
+            for i0 in range(0, na, chunk_size):
+                i1 = min(i0 + chunk_size, na)
+                diff = angles[idxs_a[i0:i1]][:, np.newaxis, :, :] - angles[idxs_b][np.newaxis, :, :, :]
+                block[i0:i1] = np.sqrt(np.mean(2.0 * (1.0 - np.cos(diff)), axis=(-2, -1)))
             matrix[np.ix_(idxs_a, idxs_b)] = block
             matrix[np.ix_(idxs_b, idxs_a)] = block.T
     else:

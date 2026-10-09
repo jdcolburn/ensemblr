@@ -9,6 +9,7 @@ from .structure_prep import (align_universe, protein_coordinate_replacer,
                               write_pca_ref_pdb, fix_overlapping_atoms,
                               prevent_threaded_lipids, fix_long_bonds)
 from .plumed import plumed_input_writer, plumed_input_writer_2d
+from .gmx_stages import run_staged_mdrun
 
 
 class UmbrellaSamplingPrep:
@@ -154,6 +155,72 @@ class UmbrellaSamplingPrep:
                   "Pass distances_dict or use a PC-based CV.")
 
         return self
+
+    def run_staged_equilibration(self, stages, topol_path, index_path=None,
+                                 gmx='gmx', env=None, maxwarn=5,
+                                 mdrun_flags=None, continue_on_error=True):
+        """
+        Run a chain of grompp + mdrun stages (e.g. EM, then equilibration,
+        then production) across every prepared window, against one shared
+        topology built externally — a CHARMM-GUI template's topol.top, or a
+        constant-pH-retitrated one — rather than a per-window pdb2gmx
+        topology.
+
+        Call after prepare_windows().  Each window's own window_N.pdb
+        (written by prepare_windows()) is used as the first stage's
+        coordinate source.
+
+        Parameters
+        ----------
+        stages : list of dict
+            See gmx_stages.run_staged_mdrun — each dict is
+            {'name': str, 'mdp': str, 'grompp_flags': list (optional),
+            'mdrun_flags': list (optional)}.  Stage N's output feeds stage
+            N+1 as -c/-r/-t automatically.
+        topol_path : str
+            Path to the shared topol.top — absolute, or relative to each
+            window_dir.
+        index_path : str, optional
+            Path to the shared index file, same convention as topol_path.
+        gmx : str
+            gmx executable name or full path.
+        env : dict, optional
+            Environment variables for the gmx subprocess calls.
+        maxwarn : int
+            Passed to every grompp call.
+        mdrun_flags : list of str, optional
+            Flags appended to every mdrun call, e.g.
+            ['-ntmpi', '1', '-ntomp', '8', '-nb', 'gpu', '-update', 'cpu'].
+        continue_on_error : bool
+            If True (default), a window that fails a stage is logged and
+            left there, but the loop continues with the rest — inspect the
+            per-window grompp/mdrun logs afterward to decide what to do
+            with any failures, rather than losing progress on every other
+            window over one bad case.  Set False to stop at the first
+            failure instead.
+
+        Returns
+        -------
+        dict
+            {window_dir: {'ok': bool, 'failed_stage': str or None,
+                          'error': str or None}}
+        """
+        if not self._window_dirs:
+            raise RuntimeError(
+                'Call prepare_windows() before run_staged_equilibration()')
+
+        initial_structures = [
+            os.path.basename(d) + '.pdb' for d in self._window_dirs
+        ]
+
+        return run_staged_mdrun(
+            self._window_dirs, stages=stages,
+            topol_path=topol_path, index_path=index_path,
+            initial_structures=initial_structures,
+            gmx=gmx, env=env, maxwarn=maxwarn, mdrun_flags=mdrun_flags,
+            continue_on_error=continue_on_error,
+            desc='Running staged equilibration',
+        )
 
     # ── Private helpers ───────────────────────────────────────────────────────
 
@@ -461,3 +528,69 @@ class GridUmbrellaSamplingPrep:
                 output_file=os.path.join(window_dir, 'plumed.dat'),
             )
         return self
+
+    def run_staged_equilibration(self, stages, topol_path, index_path=None,
+                                 gmx='gmx', env=None, maxwarn=5,
+                                 mdrun_flags=None, continue_on_error=True):
+        """
+        Run a chain of grompp + mdrun stages (e.g. EM, then equilibration,
+        then production) across every prepared window, against one shared
+        topology built externally — a CHARMM-GUI template's topol.top, or a
+        constant-pH-retitrated one — rather than a per-window pdb2gmx
+        topology.
+
+        Call after prepare_windows().  Each window's own window_N.pdb
+        (written by prepare_windows()) is used as the first stage's
+        coordinate source.
+
+        Parameters
+        ----------
+        stages : list of dict
+            See gmx_stages.run_staged_mdrun — each dict is
+            {'name': str, 'mdp': str, 'grompp_flags': list (optional),
+            'mdrun_flags': list (optional)}.  Stage N's output feeds stage
+            N+1 as -c/-r/-t automatically.
+        topol_path : str
+            Path to the shared topol.top — absolute, or relative to each
+            window_dir.
+        index_path : str, optional
+            Path to the shared index file, same convention as topol_path.
+        gmx : str
+            gmx executable name or full path.
+        env : dict, optional
+            Environment variables for the gmx subprocess calls.
+        maxwarn : int
+            Passed to every grompp call.
+        mdrun_flags : list of str, optional
+            Flags appended to every mdrun call, e.g.
+            ['-ntmpi', '1', '-ntomp', '8', '-nb', 'gpu', '-update', 'cpu'].
+        continue_on_error : bool
+            If True (default), a window that fails a stage is logged and
+            left there, but the loop continues with the rest — inspect the
+            per-window grompp/mdrun logs afterward to decide what to do
+            with any failures, rather than losing progress on every other
+            window over one bad case.  Set False to stop at the first
+            failure instead.
+
+        Returns
+        -------
+        dict
+            {window_dir: {'ok': bool, 'failed_stage': str or None,
+                          'error': str or None}}
+        """
+        if not self._window_dirs:
+            raise RuntimeError(
+                'Call prepare_windows() before run_staged_equilibration()')
+
+        initial_structures = [
+            os.path.basename(d) + '.pdb' for d in self._window_dirs
+        ]
+
+        return run_staged_mdrun(
+            self._window_dirs, stages=stages,
+            topol_path=topol_path, index_path=index_path,
+            initial_structures=initial_structures,
+            gmx=gmx, env=env, maxwarn=maxwarn, mdrun_flags=mdrun_flags,
+            continue_on_error=continue_on_error,
+            desc='Running staged equilibration',
+        )

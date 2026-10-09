@@ -14,6 +14,7 @@ from tqdm import tqdm
 from .smart_selector import generate_selection_token
 from .metrics import get_rmsd_to_ref, get_sasa, calc_distance, calc_all_distances
 from .calc_matrices import pdb_to_coordinates, get_rmsdmat_jax, get_diffmat, get_ramachandran_matrix
+from .pdb_fetch import fetch_uniprot_pdb_ids, download_pdb
 
 
 def _count_atoms(path):
@@ -190,7 +191,7 @@ class Ensemble:
     # ── Selection ──────────────────────────────────────────────────────────────
 
     def build_selection(self, conserved_residues=None, excluded_residues=None,
-                        always_include=None, output_file=None):
+                        always_include=None, output_file=None, include_loops=True):
         """
         Generate an MDAnalysis selection token using DSSP on the highest-pLDDT
         structure. Stores result in self.rmsd_selection.
@@ -205,6 +206,8 @@ class Ensemble:
             MDA token for residues to always include by CA.
         output_file : str, optional
             Write the selected atoms to this PDB path for inspection.
+        include_loops : bool, optional
+            Include loop residues in the selection (default True).
 
         Returns
         -------
@@ -216,6 +219,7 @@ class Ensemble:
             conserved_residues=conserved_residues,
             excluded_residues=excluded_residues,
             explicitly_include=always_include,
+            include_loops=include_loops,
         )
         if output_file:
             mda.Universe(ref_pdb).select_atoms(self.rmsd_selection).write(output_file)
@@ -456,6 +460,148 @@ class Ensemble:
             rmsd_dict = {os.path.basename(r[0]): r[1] for r in rmsds}
             self.df[col] = [rmsd_dict[s] for s in self.df.index]
         return self
+
+    def add_uniprot_references(self, uniprot_id, chain=None, resolution_cutoff=None,
+                               ref_resid_offset=0, num_processes=6, compute_rmsds=True):
+        """
+        Fetch all PDB structures for a UniProt accession, download them, and
+        compute RMSDs from every ensemble structure to each one.
+
+        Downloaded PDBs are saved to {structure_directory}/pdb_refs/ and columns
+        'rmsd_to_{pdb_id}_{chain}' are added to self.df (if compute_rmsds=True).
+
+        Parameters
+        ----------
+        uniprot_id : str
+            UniProt accession, e.g. 'P12345'.
+        chain : str or list of str, optional
+            Only include entries that contain this chain ID (e.g. 'A').
+            Defaults to all chains.
+        resolution_cutoff : float, optional
+            Exclude structures with resolution worse than this value (in Å).
+            NMR entries (resolution=None) are always kept unless you set
+            a cutoff and pass ``keep_nmr=False`` (see below).
+        ref_resid_offset : int
+            Residue ID offset applied to reference structures.
+        num_processes : int
+        compute_rmsds : bool
+            If True (default), immediately run compute_reference_rmsds.
+            Set to False to only download and return the label→path dict.
+
+        Returns
+        -------
+        dict of {str: str}
+            Mapping of column label → absolute path for each downloaded PDB,
+            suitable for passing to compute_reference_rmsds().
+        """
+        entries = fetch_uniprot_pdb_ids(uniprot_id)
+        print(f'{len(entries)} PDB entries found for {uniprot_id}')
+
+        if chain is not None:
+            chain_filter = {chain} if isinstance(chain, str) else set(chain)
+            entries = [e for e in entries if chain_filter & set(e['chains'])]
+            print(f'{len(entries)} entries after chain filter ({chain})')
+
+        if resolution_cutoff is not None:
+            entries = [e for e in entries
+                       if e['resolution'] is None or e['resolution'] <= resolution_cutoff]
+            print(f'{len(entries)} entries after resolution cutoff ({resolution_cutoff} Å)')
+
+        ref_dir = os.path.join(self.structure_directory, 'pdb_refs')
+        os.makedirs(ref_dir, exist_ok=True)
+
+        references = {}
+        for entry in entries:
+            pdb_id = entry['pdb_id']
+            entry_chains = entry['chains'] if entry['chains'] else ['']
+            for ch in entry_chains:
+                if chain is not None:
+                    chain_filter = {chain} if isinstance(chain, str) else set(chain)
+                    if ch not in chain_filter:
+                        continue
+                label = f'{pdb_id}_{ch}' if ch else pdb_id
+                dest = os.path.join(ref_dir, f'{label}.pdb')
+                if not os.path.exists(dest):
+                    try:
+                        download_pdb(pdb_id, dest)
+                        print(f'  Downloaded {pdb_id} → {dest}')
+                    except Exception as exc:
+                        print(f'  Warning: could not download {pdb_id}: {exc}')
+                        continue
+                else:
+                    print(f'  {dest} already exists, skipping download')
+                references[label] = dest
+
+        print(f'{len(references)} structures ready for RMSD calculation')
+
+        if compute_rmsds and references:
+            self.compute_reference_rmsds(references, ref_resid_offset=ref_resid_offset,
+                                         num_processes=num_processes)
+        return references
+
+    def project_structure(self, pdb_path, resid_offset=0):
+        """
+        Project a single external PDB into the ensemble's PC space.
+
+        Aligns the structure to the ensemble reference frame (first frame of
+        ensemble.pdb), then applies (coords − mean) @ p_components.
+
+        Parameters
+        ----------
+        pdb_path : str
+            Absolute path to the PDB file.
+        resid_offset : int
+            Residue ID offset applied to the external structure.
+
+        Returns
+        -------
+        np.ndarray
+            PC scores, shape (n_components,).
+        """
+        if self.pca is None:
+            raise RuntimeError('Call run_pca() before projecting structures.')
+        if self._ensemble_pdb is None or not os.path.exists(self._ensemble_pdb):
+            raise RuntimeError('ensemble.pdb not found — run run_pca() with output_dir set.')
+
+        mobile = mda.Universe(pdb_path, pdb_path)
+        if resid_offset:
+            mobile.atoms.residues.resids += resid_offset
+        ref = mda.Universe(self._ensemble_pdb)
+        ref.trajectory[0]
+
+        mda.analysis.align.alignto(mobile, ref, select=self.rmsd_selection)
+
+        coords = mobile.select_atoms(self.rmsd_selection).positions.flatten()
+        mean = np.asarray(self.pca.mean).flatten()
+        p_components = np.asarray(self.pca.p_components)
+        return (coords - mean) @ p_components
+
+    def project_structures(self, references, resid_offset=0):
+        """
+        Project a set of external PDB structures into the ensemble's PC space.
+
+        Parameters
+        ----------
+        references : dict {str: str}
+            Mapping of label → absolute path, as returned by add_uniprot_references().
+        resid_offset : int
+            Residue ID offset applied to all reference structures.
+
+        Returns
+        -------
+        pd.DataFrame
+            Indexed by label, with columns PC1, PC2, … for each component.
+        """
+        n_components = np.asarray(self.pca.p_components).shape[1]
+        pc_cols = [f'PC{i+1}' for i in range(n_components)]
+        rows = {}
+        for label, path in references.items():
+            try:
+                scores = self.project_structure(path, resid_offset=resid_offset)
+                rows[label] = dict(zip(pc_cols, scores))
+            except Exception as exc:
+                print(f'  Warning: could not project {label}: {exc}')
+        return pd.DataFrame(rows).T[pc_cols]
 
     # ── Matrices ──────────────────────────────────────────────────────────────
 

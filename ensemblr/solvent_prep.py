@@ -6,6 +6,8 @@ import subprocess
 
 from tqdm import tqdm
 
+from .gmx_stages import run_staged_mdrun
+
 
 # Minimal MDP written to each window directory before the genion grompp call.
 _IONS_MDP = """\
@@ -222,7 +224,7 @@ class SolventSystemPrep:
         if '-ntomp' in mdrun_flags and mdrun_env is not None:
             mdrun_env['OMP_NUM_THREADS'] = mdrun_flags[mdrun_flags.index('-ntomp') + 1]
 
-        for window_dir in tqdm(self._window_dirs, desc='Minimising windows'):
+        for window_dir in self._window_dirs:
             mdp_path = os.path.join(window_dir, 'minim.mdp')
             if minim_mdp is not None:
                 shutil.copy(minim_mdp, mdp_path)
@@ -230,20 +232,15 @@ class SolventSystemPrep:
                 with open(mdp_path, 'w') as f:
                     f.write(_EM_MDP_TEMPLATE.format(emtol=emtol, nsteps=nsteps))
 
-            self._run(
-                [self.gmx, 'grompp',
-                 '-f', 'minim.mdp',
-                 '-c', 'system.gro',
-                 '-p', 'topol.top',
-                 '-o', 'em.tpr',
-                 '-maxwarn', '2'],
-                cwd=window_dir, log='grompp_em.log',
-            )
-            self._run(
-                [self.gmx, 'mdrun', '-v', '-deffnm', 'em'] + mdrun_flags,
-                cwd=window_dir, log='mdrun_em.log',
-                env=mdrun_env,
-            )
+        run_staged_mdrun(
+            self._window_dirs,
+            stages=[{'name': 'em', 'mdp': 'minim.mdp', 'mdrun_flags': ['-v']}],
+            topol_path='topol.top', index_path=None,
+            initial_structures='system.gro',
+            gmx=self.gmx, env=self.env, mdrun_env=mdrun_env,
+            maxwarn=2, mdrun_flags=mdrun_flags,
+            continue_on_error=False, desc='Minimising windows',
+        )
 
         self._write_combined_pdb(gro_name='em.gro',
                                  filename='all_windows_minimised.pdb')
@@ -910,3 +907,353 @@ class GridSolventSystemPrep(SolventSystemPrep):
                         f'AT={pc2_value:.4f}\n\n')
                 f.write('PRINT ARG=CV1,CV2,restraint_pc1.*,restraint_pc2.* '
                         'FILE=COLVAR\n')
+
+    # ── SLURM ─────────────────────────────────────────────────────────────────
+
+    def write_slurm_input(self, cluster='soma', output_file=None,
+                          job_name='us_2d',
+                          equi_prefix='step6.%d_equilibration',
+                          prod_prefix='400ns_charmm36-2021',
+                          equi_steps=6,
+                          em_prefix='em',
+                          index_file=None,
+                          # SOMA-specific
+                          time_soma='144:00:00',
+                          cpus_per_task=8,
+                          partition='g-ran,gpu4-biggin',
+                          gromacs_module='all/GROMACS/2022.6-CUDA-12.1.1-PLUMED-2.9.4',
+                          ntasks_per_socket=1,
+                          # ARCHER-specific (shared by both archer modes)
+                          time_archer='96:00:00',
+                          account='e280-biggin',
+                          archer_partition='standard',
+                          qos='long',
+                          archer_cpus_per_task=32,
+                          gmx_path='/work/e280/e280-Biggin/jdcolburn/software/gromacs/2022.4-plumed-mpi/bin/gmx_mpi',
+                          # ARCHER multidir-specific
+                          tasks_per_node=4,
+                          # ARCHER array-specific
+                          archer_nodes_per_task=1,
+                          archer_tasks_per_node=4):
+        """
+        Write a SLURM submission script for all umbrella sampling windows
+        and a ``window_list.txt`` index file.
+
+        Supports three cluster layouts:
+
+        ``'soma'``
+            GPU cluster with a job array — one GPU task per window.
+            Array size is set automatically from the number of windows.
+
+        ``'archer'``
+            CPU cluster (ARCHER2) using GROMACS ``--multidir`` — all windows
+            run simultaneously under a single ``srun`` call.  Node count is
+            computed as ``ceil(n_windows / tasks_per_node)``.
+
+        ``'archer_array'``
+            CPU cluster (ARCHER2) with a job array — one ``srun`` per window,
+            no replica exchange / multidir.  Each array task allocates
+            ``archer_nodes_per_task`` nodes and runs a single simulation.
+
+        A ``window_list.txt`` is written to ``output_dir`` listing window
+        subdirectory names in the same order as ``plumed_multidir.dat``.
+        All scripts use this file so that the window ordering always matches
+        the PLUMED replica ordering.
+
+        Parameters
+        ----------
+        cluster : {'soma', 'archer', 'archer_array'}
+            Target cluster / submission style.
+        output_file : str, optional
+            Path for the generated script.  Defaults to
+            ``output_dir/run_<cluster>.sh``.
+        job_name : str
+            ``#SBATCH -J`` / ``--job-name`` value.
+        equi_prefix : str
+            printf-style prefix for equilibration MDP/output names,
+            e.g. ``'step6.%d_equilibration'``.
+        prod_prefix : str
+            Base name for production MDP/output files.
+        equi_steps : int
+            Number of sequential equilibration steps (1 … equi_steps).
+        em_prefix : str
+            Stem of the minimised structure used as the starting coordinate
+            for step 1 of equilibration (default ``'em'`` → ``em.gro``).
+        index_file : str or None
+            Path to an index file relative to the window directory, e.g.
+            ``'../index.ndx'``.  If None the ``-n`` flag is omitted.
+        time_soma : str
+            Wall-clock time limit for SOMA (``HH:MM:SS``).
+        cpus_per_task : int
+            ``--cpus-per-task`` for SOMA.
+        partition : str
+            SOMA partition(s), comma-separated.
+        gromacs_module : str
+            Full module name loaded on SOMA.
+        ntasks_per_socket : int
+            ``--ntasks-per-socket`` for SOMA.
+        time_archer : str
+            Wall-clock time limit for ARCHER modes (``HH:MM:SS``).
+        account : str
+            ``--account`` for ARCHER.
+        archer_partition : str
+            ``--partition`` for ARCHER.
+        qos : str
+            ``--qos`` for ARCHER.
+        archer_cpus_per_task : int
+            ``--cpus-per-task`` for ARCHER modes.
+        gmx_path : str
+            Full path to the MPI-enabled GROMACS binary on ARCHER.
+        tasks_per_node : int
+            ``--tasks-per-node`` for ``'archer'`` (multidir) mode.
+        archer_nodes_per_task : int
+            Nodes allocated per window for ``'archer_array'`` mode.
+        archer_tasks_per_node : int
+            ``--tasks-per-node`` for ``'archer_array'`` mode.
+
+        Returns
+        -------
+        self
+        """
+        if not self._window_dirs:
+            raise RuntimeError('Call build_systems() before write_slurm_input()')
+
+        if cluster not in ('soma', 'archer', 'archer_array'):
+            raise ValueError(
+                f"cluster must be 'soma', 'archer', or 'archer_array', got '{cluster}'")
+
+        if output_file is None:
+            output_file = os.path.join(self.output_dir, f'run_{cluster}.sh')
+
+        # Write window_list.txt — relative directory names in PLUMED order.
+        win_names = [os.path.basename(d) for d in self._window_dirs]
+        win_list_path = os.path.join(self.output_dir, 'window_list.txt')
+        with open(win_list_path, 'w') as f:
+            f.write('\n'.join(win_names) + '\n')
+
+        if cluster == 'soma':
+            self._write_soma_slurm(
+                output_file, win_names, job_name, equi_prefix, prod_prefix,
+                equi_steps, em_prefix, index_file, time_soma, cpus_per_task,
+                partition, gromacs_module, ntasks_per_socket)
+        elif cluster == 'archer':
+            self._write_archer_slurm(
+                output_file, win_names, job_name, equi_prefix, prod_prefix,
+                equi_steps, em_prefix, index_file, time_archer, account,
+                archer_partition, qos, tasks_per_node, archer_cpus_per_task,
+                gmx_path)
+        else:
+            self._write_archer_array_slurm(
+                output_file, win_names, job_name, equi_prefix, prod_prefix,
+                equi_steps, em_prefix, index_file, time_archer, account,
+                archer_partition, qos, archer_nodes_per_task,
+                archer_tasks_per_node, archer_cpus_per_task, gmx_path)
+
+        print(f'  SLURM script → {output_file}')
+        print(f'  Window list  → {win_list_path}')
+        return self
+
+    def _write_soma_slurm(self, output_file, win_names, job_name, equi_prefix,
+                           prod_prefix, equi_steps, em_prefix, index_file,
+                           time, cpus_per_task, partition, gromacs_module,
+                           ntasks_per_socket):
+        n = len(win_names)
+        ndx_flag = f' -n "../{index_file}"' if index_file else ''
+
+        lines = [
+            '#!/bin/bash',
+            '',
+            f'#SBATCH --nodes=1',
+            f'#SBATCH --ntasks-per-socket={ntasks_per_socket}',
+            f'#SBATCH --cpus-per-task={cpus_per_task}',
+            '#SBATCH --gres=gpu:1',
+            '#SBATCH --gres-flags=enforce-binding',
+            f'#SBATCH --time={time}',
+            f'#SBATCH --array=0-{n - 1}',
+            f'#SBATCH -J {job_name}',
+            f'#SBATCH -p {partition}',
+            '',
+            'source /etc/profile.d/modules.sh',
+            'MODULEPATH=$MODULEPATH:/home/bioc1781/privatemodules',
+            'module purge',
+            f'module load {gromacs_module}',
+            '',
+            'export OMP_NUM_THREADS=${SLURM_CPUS_PER_TASK}',
+            '',
+            '# Select window directory from ordered list',
+            'mapfile -t WINDOWS < window_list.txt',
+            'win="${WINDOWS[$SLURM_ARRAY_TASK_ID]}"',
+            'cd "$win"',
+            '',
+            f'equi_prefix="{equi_prefix}"',
+            f'prod_prefix="{prod_prefix}"',
+            '',
+            '# Equilibration',
+            'cnt=1',
+            f'cntmax={equi_steps}',
+            '',
+            'while (( cnt <= cntmax )); do',
+            '    pcnt=$((cnt - 1))',
+            '    istep=$(printf "${equi_prefix}" "${cnt}")',
+            '    pstep=$(printf "${equi_prefix}" "${pcnt}")',
+            f'    if (( cnt == 1 )); then pstep="{em_prefix}"; fi',
+            '',
+            f'    gmx grompp -f "../${{istep}}.mdp" -o "${{istep}}.tpr"'
+            f' -c "${{pstep}}.gro" -r "{em_prefix}.gro"'
+            f' -p topol.top{ndx_flag}',
+            '',
+            '    gmx mdrun -ntmpi 1 -ntomp ${SLURM_CPUS_PER_TASK}'
+            ' -v -deffnm "${istep}" -cpi -plumed plumed.dat',
+            '',
+            '    cnt=$((cnt + 1))',
+            'done',
+            '',
+            '# Production',
+            f'gmx grompp -f "../${{prod_prefix}}.mdp" -o md.tpr'
+            f' -c step6.{equi_steps}_equilibration.gro'
+            f' -p topol.top{ndx_flag}',
+            '',
+            'gmx mdrun -ntmpi 1 -ntomp ${SLURM_CPUS_PER_TASK}'
+            ' -v -deffnm md -cpi -plumed plumed.dat',
+        ]
+
+        with open(output_file, 'w') as f:
+            f.write('\n'.join(lines) + '\n')
+
+    def _write_archer_array_slurm(self, output_file, win_names, job_name,
+                                   equi_prefix, prod_prefix, equi_steps,
+                                   em_prefix, index_file, time, account,
+                                   partition, qos, nodes_per_task,
+                                   tasks_per_node, cpus_per_task, gmx_path):
+        n = len(win_names)
+        ndx_flag = f' -n "../{index_file}"' if index_file else ''
+
+        lines = [
+            '#!/bin/bash',
+            f'#SBATCH --job-name={job_name}',
+            f'#SBATCH --nodes={nodes_per_task}',
+            f'#SBATCH --tasks-per-node={tasks_per_node}',
+            f'#SBATCH --cpus-per-task={cpus_per_task}',
+            f'#SBATCH --time={time}',
+            f'#SBATCH --account={account}',
+            f'#SBATCH --partition={partition}',
+            f'#SBATCH --qos={qos}',
+            f'#SBATCH --array=0-{n - 1}',
+            '',
+            'export OMP_NUM_THREADS=${SLURM_CPUS_PER_TASK}',
+            'export SRUN_CPUS_PER_TASK=${SLURM_CPUS_PER_TASK}',
+            '',
+            f'gmx="{gmx_path}"',
+            '',
+            '# Select window directory from ordered list',
+            'mapfile -t WINDOWS < window_list.txt',
+            'win="${WINDOWS[$SLURM_ARRAY_TASK_ID]}"',
+            'cd "$win"',
+            '',
+            f'equi_prefix="{equi_prefix}"',
+            f'prod_prefix="{prod_prefix}"',
+            '',
+            '# Equilibration',
+            'cnt=1',
+            f'cntmax={equi_steps}',
+            '',
+            'while (( cnt <= cntmax )); do',
+            '    pcnt=$((cnt - 1))',
+            '    istep=$(printf "${equi_prefix}" "${cnt}")',
+            '    pstep=$(printf "${equi_prefix}" "${pcnt}")',
+            f'    if (( cnt == 1 )); then pstep="{em_prefix}"; fi',
+            '',
+            f'    $gmx grompp -f "../${{istep}}.mdp" -o "${{istep}}.tpr"'
+            f' -c "${{pstep}}.gro" -r "{em_prefix}.gro"'
+            f' -p topol.top{ndx_flag}',
+            '',
+            '    srun --cpu-bind=cores $gmx mdrun -ntomp ${SLURM_CPUS_PER_TASK}'
+            ' -v -deffnm "${istep}" -cpi -plumed plumed.dat',
+            '',
+            '    cnt=$((cnt + 1))',
+            'done',
+            '',
+            '# Production',
+            f'$gmx grompp -f "../${{prod_prefix}}.mdp" -o md.tpr'
+            f' -c step6.{equi_steps}_equilibration.gro'
+            f' -p topol.top{ndx_flag}',
+            '',
+            'srun --cpu-bind=cores $gmx mdrun -ntomp ${SLURM_CPUS_PER_TASK}'
+            ' -v -deffnm md -cpi -plumed plumed.dat',
+        ]
+
+        with open(output_file, 'w') as f:
+            f.write('\n'.join(lines) + '\n')
+
+    def _write_archer_slurm(self, output_file, win_names, job_name, equi_prefix,
+                             prod_prefix, equi_steps, em_prefix, index_file,
+                             time, account, partition, qos, tasks_per_node,
+                             cpus_per_task, gmx_path):
+        import math
+        n = len(win_names)
+        n_nodes = math.ceil(n / tasks_per_node)
+        ndx_flag = f' -n "{index_file}"' if index_file else ''
+
+        lines = [
+            '#!/bin/bash',
+            f'#SBATCH --job-name={job_name}',
+            f'#SBATCH --nodes={n_nodes}',
+            f'#SBATCH --tasks-per-node={tasks_per_node}',
+            f'#SBATCH --cpus-per-task={cpus_per_task}',
+            f'#SBATCH --time={time}',
+            f'#SBATCH --account={account}',
+            f'#SBATCH --partition={partition}',
+            f'#SBATCH --qos={qos}',
+            '',
+            'export OMP_NUM_THREADS=${SLURM_CPUS_PER_TASK}',
+            'export SRUN_CPUS_PER_TASK=${SLURM_CPUS_PER_TASK}',
+            '',
+            f'gmx="{gmx_path}"',
+            '',
+            f'equi_prefix="{equi_prefix}"',
+            f'prod_prefix="{prod_prefix}"',
+            '',
+            '# Read window list (must match plumed_multidir.dat ordering)',
+            'mapfile -t WINDOWS < window_list.txt',
+            '',
+            '# Equilibration',
+            'cnt=1',
+            f'cntmax={equi_steps}',
+            '',
+            'while (( cnt <= cntmax )); do',
+            '    pcnt=$((cnt - 1))',
+            '    istep=$(printf "${equi_prefix}" "${cnt}")',
+            '    pstep=$(printf "${equi_prefix}" "${pcnt}")',
+            f'    if (( cnt == 1 )); then pstep="{em_prefix}"; fi',
+            '',
+            '    for win in "${WINDOWS[@]}"; do',
+            f'        $gmx grompp -f "${{istep}}.mdp"'
+            f' -o "${{win}}/${{istep}}.tpr"'
+            f' -c "${{win}}/${{pstep}}.gro"'
+            f' -r "${{win}}/${{pstep}}.gro"'
+            f' -p "${{win}}/topol.top"{ndx_flag}',
+            '    done',
+            '',
+            '    srun --cpu-bind=cores $gmx mdrun -ntomp ${SLURM_CPUS_PER_TASK}'
+            ' -multidir "${WINDOWS[@]}" -deffnm "${istep}"'
+            ' -plumed ../plumed_multidir.dat',
+            '',
+            '    cnt=$((cnt + 1))',
+            'done',
+            '',
+            '# Production grompp',
+            'for win in "${WINDOWS[@]}"; do',
+            f'    $gmx grompp -f "${{prod_prefix}}.mdp"'
+            f' -o "${{win}}/md.tpr"'
+            f' -c "${{win}}/step6.{equi_steps}_equilibration.gro"'
+            f' -p "${{win}}/topol.top"{ndx_flag}',
+            'done',
+            '',
+            '# Production run',
+            'srun --cpu-bind=cores $gmx mdrun -ntomp ${SLURM_CPUS_PER_TASK}'
+            ' -multidir "${WINDOWS[@]}" -deffnm md'
+            ' -plumed ../plumed_multidir.dat',
+        ]
+
+        with open(output_file, 'w') as f:
+            f.write('\n'.join(lines) + '\n')

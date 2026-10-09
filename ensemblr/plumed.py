@@ -1,6 +1,10 @@
 # PLUMED input file generation and utilities
 
 import os
+import re
+import subprocess
+
+import numpy as np
 import MDAnalysis as mda
 
 
@@ -186,3 +190,258 @@ def plumed_input_writer_2d(cv1_window_values, cv2_window_values,
             f.write(f'restraint_pc2: RESTRAINT ARG=CV2 KAPPA={force_constant} '
                     f'AT={cv2_window_values:.4f}\n\n')
             f.write('PRINT ARG=CV1,CV2,restraint_pc1.*,restraint_pc2.* FILE=COLVAR\n')
+
+
+def run_plumed_driver(window_dir, plumed_exe, gro_name='system.gro', plumed_lib=None):
+    """
+    Run ``plumed driver`` on a single window and return the first-frame CV values.
+
+    Converts the GRO trajectory to PDB before calling the driver — required as
+    a workaround for a broken GRO molfile reader in some PLUMED 2.8 builds that
+    causes a silent crash during initialisation.  Strips restraint lines and
+    rewrites the PRINT ARG so the driver does not require AT= values.  Writes
+    COLVAR_driver in window_dir.
+
+    Parameters
+    ----------
+    window_dir : str
+        Absolute path to the window directory.  Must contain ``plumed.dat``
+        and the GRO file.
+    plumed_exe : str
+        Path to the ``plumed`` executable.
+    gro_name : str
+        Filename of the trajectory/structure GRO in window_dir.
+    plumed_lib : str, optional
+        Path to the PLUMED lib directory (e.g. ``.../plumed/2.8.1/lib``).
+        Used to build a minimal ``LD_LIBRARY_PATH`` that avoids conda
+        ``libstdc++`` conflicts with PLUMED's hardcoded RPATH.  If None,
+        the full parent-process environment is inherited.
+
+    Returns
+    -------
+    cv_values : tuple of float
+        ``(cv1, cv2)`` read from the first data line of COLVAR_driver.
+        Both are ``nan`` if the driver failed or the file was not written.
+    error : str or None
+        The relevant PLUMED error line(s) if the run failed, else None.
+    """
+    pdb_path    = os.path.join(window_dir, '_system_driver.pdb')
+    test_dat    = os.path.join(window_dir, '_plumed_driver_test.dat')
+    colvar_path = os.path.join(window_dir, 'COLVAR_driver')
+
+    # convert GRO → PDB (PLUMED's GRO molfile reader crashes in some builds)
+    u = mda.Universe(os.path.join(window_dir, gro_name))
+    u.atoms.write(pdb_path)
+
+    # strip restraint lines, fix PRINT ARG, redirect output file
+    src = open(os.path.join(window_dir, 'plumed.dat')).read()
+    lines = [l for l in src.splitlines() if not l.strip().startswith('restraint')]
+    test_src = re.sub(r'(PRINT ARG=)\S+', r'\1CV1,CV2', '\n'.join(lines))
+    test_src = test_src.replace('FILE=COLVAR', 'FILE=COLVAR_driver')
+    with open(test_dat, 'w') as f:
+        f.write(test_src)
+
+    env = (
+        {'PATH': os.environ.get('PATH', ''),
+         'HOME': os.environ.get('HOME', ''),
+         'LD_LIBRARY_PATH': plumed_lib}
+        if plumed_lib else None
+    )
+
+    result = subprocess.run(
+        [plumed_exe, 'driver',
+         '--plumed', '_plumed_driver_test.dat',
+         '--mf_pdb', '_system_driver.pdb'],
+        cwd=window_dir, capture_output=True, text=True, env=env,
+    )
+
+    if result.returncode != 0:
+        error_lines = [
+            l for l in (result.stdout + result.stderr).splitlines()
+            if 'error' in l.lower() or 'message follows' in l.lower()
+        ]
+        return (float('nan'), float('nan')), '\n'.join(error_lines) or result.stderr[:300]
+
+    cv1, cv2 = float('nan'), float('nan')
+    if os.path.exists(colvar_path):
+        with open(colvar_path) as f:
+            for line in f:
+                if not line.startswith('#'):
+                    parts = line.split()
+                    if len(parts) >= 3:
+                        cv1, cv2 = float(parts[1]), float(parts[2])
+                        break
+    return (cv1, cv2), None
+
+
+def verify_2d_pca_cvs(window_dirs, structures, cv1_col, cv2_col, ensemble_df,
+                       plumed_exe, gro_name='system.gro', plumed_lib=None):
+    """
+    Run ``plumed driver`` on a list of windows and compare CV1/CV2 against
+    MDA-computed projections stored in ``ensemble_df``.
+
+    Parameters
+    ----------
+    window_dirs : list of str
+        Absolute paths to window directories (one per active grid cell).
+    structures : list of str
+        Ensemble structure filename for each window (index into ensemble_df).
+    cv1_col, cv2_col : str
+        Column names in ensemble_df for the two CVs (e.g. 'PC1', 'PC2').
+    ensemble_df : pd.DataFrame
+        Ensemble dataframe indexed by structure filename.
+    plumed_exe : str
+        Path to the ``plumed`` executable.
+    gro_name : str
+        GRO filename inside each window directory.
+    plumed_lib : str, optional
+        PLUMED lib directory — passed to run_plumed_driver.
+
+    Returns
+    -------
+    dict with keys:
+        plumed_cv1, plumed_cv2 : np.ndarray  — values read by PLUMED
+        mda_cv1, mda_cv2       : np.ndarray  — values from ensemble_df
+        valid                  : np.ndarray bool mask (non-nan windows)
+        errors                 : list of (window_dir, error_msg) for failures
+    """
+    from tqdm import tqdm
+
+    plumed_cv1, plumed_cv2 = [], []
+    mda_cv1 = [ensemble_df.loc[s, cv1_col] for s in structures]
+    mda_cv2 = [ensemble_df.loc[s, cv2_col] for s in structures]
+    errors  = []
+
+    for wdir in tqdm(window_dirs, desc='PLUMED driver'):
+        (cv1, cv2), err = run_plumed_driver(wdir, plumed_exe, gro_name, plumed_lib)
+        plumed_cv1.append(cv1)
+        plumed_cv2.append(cv2)
+        if err:
+            errors.append((wdir, err))
+
+    plumed_cv1 = np.array(plumed_cv1)
+    plumed_cv2 = np.array(plumed_cv2)
+    mda_cv1    = np.array(mda_cv1)
+    mda_cv2    = np.array(mda_cv2)
+    valid      = ~(np.isnan(plumed_cv1) | np.isnan(plumed_cv2))
+
+    if errors:
+        print(f'  {len(errors)} window(s) failed:')
+        for wdir, msg in errors:
+            print(f'  {os.path.basename(wdir)}: {msg}')
+
+    return dict(plumed_cv1=plumed_cv1, plumed_cv2=plumed_cv2,
+                mda_cv1=mda_cv1, mda_cv2=mda_cv2,
+                valid=valid, errors=errors)
+
+
+def run_plumed_driver_1d(window_dir, plumed_exe, gro_name='system.gro', plumed_lib=None):
+    """
+    Run ``plumed driver`` on a single 1D umbrella sampling window.
+
+    Like ``run_plumed_driver`` but for single-CV plumed.dat files where the
+    restraint label is ``umbrella_restraint`` and the CV label is ``CV``.
+    Strips any line containing the RESTRAINT action (regardless of label),
+    and rewrites PRINT ARG to ``CV``.
+
+    Returns
+    -------
+    cv : float
+        CV value from the first data line of COLVAR_driver, or nan on failure.
+    error : str or None
+    """
+    pdb_path    = os.path.join(window_dir, '_system_driver.pdb')
+    test_dat    = os.path.join(window_dir, '_plumed_driver_test.dat')
+    colvar_path = os.path.join(window_dir, 'COLVAR_driver')
+
+    u = mda.Universe(os.path.join(window_dir, gro_name))
+    u.atoms.write(pdb_path)
+
+    src = open(os.path.join(window_dir, 'plumed.dat')).read()
+    lines = [l for l in src.splitlines()
+             if not re.search(r'\bRESTRAINT\b', l)]
+    test_src = re.sub(r'(PRINT ARG=)\S+', r'\1CV', '\n'.join(lines))
+    test_src = test_src.replace('FILE=COLVAR', 'FILE=COLVAR_driver')
+    with open(test_dat, 'w') as f:
+        f.write(test_src)
+
+    env = (
+        {'PATH': os.environ.get('PATH', ''),
+         'HOME': os.environ.get('HOME', ''),
+         'LD_LIBRARY_PATH': plumed_lib}
+        if plumed_lib else None
+    )
+
+    result = subprocess.run(
+        [plumed_exe, 'driver',
+         '--plumed', '_plumed_driver_test.dat',
+         '--mf_pdb', '_system_driver.pdb'],
+        cwd=window_dir, capture_output=True, text=True, env=env,
+    )
+
+    if result.returncode != 0:
+        error_lines = [
+            l for l in (result.stdout + result.stderr).splitlines()
+            if 'error' in l.lower() or 'message follows' in l.lower()
+        ]
+        return float('nan'), '\n'.join(error_lines) or result.stderr[:300]
+
+    cv = float('nan')
+    if os.path.exists(colvar_path):
+        with open(colvar_path) as f:
+            for line in f:
+                if not line.startswith('#'):
+                    parts = line.split()
+                    if len(parts) >= 2:
+                        cv = float(parts[1])
+                        break
+    return cv, None
+
+
+def verify_1d_pca_cvs(window_dirs, structures, cv_col, ensemble_df,
+                       plumed_exe, gro_name='system.gro', plumed_lib=None):
+    """
+    Run ``plumed driver`` on a list of 1D umbrella sampling windows and compare
+    the CV values against MDA projections.
+
+    Parameters
+    ----------
+    window_dirs : list of str
+    structures : list of str
+    cv_col : str
+        Column name in ensemble_df for the CV (e.g. 'PC1').
+    ensemble_df : pd.DataFrame
+    plumed_exe : str
+    gro_name : str
+    plumed_lib : str, optional
+
+    Returns
+    -------
+    dict with keys:
+        plumed_cv : np.ndarray
+        mda_cv    : np.ndarray
+        valid     : np.ndarray bool mask
+        errors    : list of (window_dir, error_msg)
+    """
+    from tqdm import tqdm
+
+    plumed_cv = []
+    mda_cv    = [ensemble_df.loc[s, cv_col] for s in structures]
+    errors    = []
+
+    for wdir in tqdm(window_dirs, desc='PLUMED driver'):
+        cv, err = run_plumed_driver_1d(wdir, plumed_exe, gro_name, plumed_lib)
+        plumed_cv.append(cv)
+        if err:
+            errors.append((wdir, err))
+
+    plumed_cv = np.array(plumed_cv)
+    mda_cv    = np.array(mda_cv)
+    valid     = ~np.isnan(plumed_cv)
+
+    if errors:
+        print(f'  {len(errors)} window(s) failed:')
+        for wdir, msg in errors:
+            print(f'  {os.path.basename(wdir)}: {msg}')
+
+    return dict(plumed_cv=plumed_cv, mda_cv=mda_cv, valid=valid, errors=errors)

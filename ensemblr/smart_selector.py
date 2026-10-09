@@ -3,7 +3,7 @@
 from Bio.PDB import PDBParser
 from Bio.PDB.DSSP import DSSP                   # for secondary structure selection
 
-def generate_selection_token(reference_pdb_file, offset=0, conserved_residues=None, excluded_residues=None, explicitly_include=None):
+def generate_selection_token(reference_pdb_file, offset=0, conserved_residues=None, excluded_residues=None, explicitly_include=None, include_loops=True):
 
     """
     Tries to generate a useful MDA selection token (for PCA etc.) based on some heuristics and user-speficied info.
@@ -140,7 +140,7 @@ def generate_selection_token(reference_pdb_file, offset=0, conserved_residues=No
     ss_parts = []
     if selection_helices:
         ss_parts.append('((' + selection_helices + ') and name CA)')
-    if selection_loops:
+    if include_loops and selection_loops:
         ss_parts.append('((' + selection_loops  + ') and name CA)')
     if selection_sheets:
         ss_parts.append('((' + selection_sheets + ') and name CA)')

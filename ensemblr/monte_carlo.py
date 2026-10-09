@@ -22,7 +22,7 @@ def calc_energy(path, rmsd_matrix, cv_matrix, struct_to_idx,
     struct_to_idx : dict
         {structure_filename: row/col index in the matrices}
     odf_matrix : np.ndarray or None
-        Optional orthogonal DOF matrix (e.g. PC2).
+        Optional orthogonal DOF matrix (e.g. a second PC).
     dos_matrix : np.ndarray or None
         Optional density-of-states matrix.
     wf_rmsd, wf_cv, wf_odf, wf_dos : float
@@ -192,10 +192,11 @@ def mc_grid_optimisation(seed, initial_grid, active_cells, rama_matrix, struct_t
     wf_cv : float
         Weight for the CV difference term (default 0.0 — disabled).
     cv_matrix : np.ndarray or None
-        Pairwise PC1 difference matrix.  Required when wf_cv > 0.
+        Pairwise primary-CV difference matrix.  Required when wf_cv > 0.
     cv2_matrix : np.ndarray or None
-        Pairwise PC2 difference matrix.  Combined with cv_matrix as
-        Euclidean distance: sqrt(cv1² + cv2²).  Optional even when wf_cv > 0.
+        Pairwise secondary-CV difference matrix (e.g. a second PC).
+        Combined with cv_matrix as Euclidean distance: sqrt(cv1² + cv2²).
+        Optional even when wf_cv > 0.
 
     Returns
     -------
