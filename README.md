@@ -26,7 +26,7 @@ A lightweight embedding routine is also provided to insert selected structures i
 
 1. **Generate ensemble**
    - External (e.g. `localcolabfold`)
-   - Example script: `generate_af2_ensemble.sh`
+   - Adaptive generator: `generate_af2_ensemble_v2.py` (see `GENERATE_AF2_ENSEMBLE_V2.md`)
 
 2. **Preprocess structures**
    - Filtering (e.g. pLDDT)
@@ -54,6 +54,22 @@ A lightweight embedding routine is also provided to insert selected structures i
    - Generate window structures
    - Embed into template system
    - Write PLUMED input files
+
+---
+
+## 2D Umbrella Sampling (in development)
+
+A 2D extension of the pipeline exists (`GridPathFinder`, `GridUmbrellaSamplingPrep`, `GridSolventSystemPrep`) that places windows on a regular grid in (PC1, PC2) space to recover a 2D PMF. The MC objective uses Ramachandran smoothness + optional Euclidean CV distance between 4-connected grid neighbours. Window directories are named `window_N_M` (bin indices).
+
+**What works:**
+- Grid construction and MC optimisation
+- GROMACS solvent system prep (`GridSolventSystemPrep`)
+- 2D PLUMED input generation (two PCAVARS + two RESTRAINTs per window)
+- PLUMED driver cross-check cell in the notebook
+
+**Still missing:**
+- `GridUmbrellaSamplingPrep` (membrane/template path) is implemented but untested
+- No GROMACS submission scripts for the 2D case
 
 ---
 
