@@ -9,7 +9,10 @@ from .solvent_prep import SolventSystemPrep, GridSolventSystemPrep
 from .pdb_fetch import fetch_uniprot_pdb_ids, download_pdb
 from .adaptive_reweighting import compute_adaptive_weights
 from .pore_profiles import PoreProfiler
-from ._version import __version__
+try:
+    from ._version import __version__
+except ImportError:  # not installed; _version.py is written by pip install
+    __version__ = "unknown"
 
 __all__ = [
     "Ensemble",

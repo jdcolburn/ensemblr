@@ -26,7 +26,7 @@ A lightweight embedding routine is also provided to insert selected structures i
 
 1. **Generate ensemble**
    - External (e.g. `localcolabfold`)
-   - Adaptive generator: `generate_af2_ensemble_v2.py` (see `GENERATE_AF2_ENSEMBLE_V2.md`)
+   - Adaptive generator: `ensemblr-generate` (see `GENERATE_AF2_ENSEMBLE_V2.md`)
 
 2. **Preprocess structures**
    - Filtering (e.g. pLDDT)
@@ -73,50 +73,73 @@ A 2D extension of the pipeline exists (`GridPathFinder`, `GridUmbrellaSamplingPr
 
 ---
 
-## Files
-
-| File | Description |
-|---|---|
-| `calc_matrices.py` | Constructs pairwise RMSD and CV-difference matrices (JAX-accelerated) |
-| `monte_carlo.py` | Monte Carlo simulated annealing for path optimisation |
-| `us_window_setup.py` | Embeds structures and prepares umbrella sampling inputs |
-| `misc_functions.py` | Utility functions (RMSD, SASA, distance CVs) |
-| `smart_selector.py` | DSSP-based intelligent atom selection |
-
----
-
-## Dependencies
-
-### Core
-
-- numpy  
-- pandas  
-- matplotlib  
-- seaborn  
-- MDAnalysis  
-- Biopython  
-
-### Optional (performance)
-
-- jax  
-- jaxlib  
-
-### Utilities
-
-- tqdm (progress bars)  
-- IPython (display utilities)  
-
----
-
 ## Installation
 
-Clone and add to your Python path:
+Python ≥ 3.10. The conda environment is the easiest route, because it also provides the external
+programs (`mkdssp`, `plumed`):
 
 ```bash
-git clone <repo_url>
-cd <repo>
-export PYTHONPATH=$PYTHONPATH:$(pwd)
+git clone https://github.com/jdcolburn/ensemblr.git
+cd ensemblr
+conda env create -f environment.yml
+conda activate ensemblr
+pytest --pyargs ensemblr        # quick check that the install works
 ```
+
+Or with pip, into an environment you already have (Python packages only):
+
+```bash
+pip install git+https://github.com/jdcolburn/ensemblr.git
+```
+
+Use `pip install -e ".[notebook]"` from a clone if you want to edit the code or run the notebooks.
+The JAX installed by default runs on the CPU; for GPU see the
+[JAX install guide](https://docs.jax.dev/en/latest/installation.html) (e.g. `pip install "jax[cuda12]"`).
+
+### External programs
+
+These are not Python packages, so pip can't install them. Install the ones you need:
+
+| Program | Needed for | How to get it |
+|---|---|---|
+| ColabFold (`colabfold_batch`) | generating ensembles (`ensemblr-generate`) | [localcolabfold](https://github.com/YoshitakaMo/localcolabfold); then put it on `PATH` or set `COLABFOLD_DIR` |
+| `mkdssp` | secondary-structure atom selection (`smart_selector`, generator PCA) | in `environment.yml` (`conda install -c conda-forge dssp`) |
+| `plumed` | checking US window CVs (`plumed.verify_*`) | in `environment.yml` (`conda install -c conda-forge plumed`) |
+| `gmx` | solvating / equilibrating windows (`SolventSystemPrep`, `gmx_stages`) | your GROMACS install |
+| `hole`, `memembed` | pore profiles (`PoreProfiler`) | `conda install -c conda-forge hole2`; [memembed](https://github.com/psipred/memembed) |
+
+---
+
+## Usage
+
+1. Generate an ensemble: `ensemblr-generate --dry-run`, then `ensemblr-generate`, from a directory
+   containing `input.fasta`. See `GENERATE_AF2_ENSEMBLE_V2.md` for options.
+2. Analyse it and set up umbrella sampling in a notebook: copy one of the example notebooks, edit the
+   settings at the top, and run it top to bottom. `example_notebook_clean.ipynb` is the 1D workflow;
+   `example_notebook_2d_grid_clean.ipynb` (also installed as
+   `ensemblr/templates/umbrella_sampling_2d_grid_template.ipynb`) is the 2D grid.
+
+---
+
+## Modules
+
+| Module | Contents |
+|---|---|
+| `generate.py` | Adaptive AF2 ensemble generator (`ensemblr-generate`) |
+| `ensemble.py` | `Ensemble`: loads structures, pLDDT filtering, alignment, PCA and other CVs, clustering |
+| `path_finder.py`, `grid_path_finder.py` | `MCPathFinder` (1D path) and `GridPathFinder` (2D grid) |
+| `monte_carlo.py` | Monte Carlo simulated annealing used by the path finders |
+| `calc_matrices.py` | Pairwise RMSD and CV-difference matrices (JAX) |
+| `us_prep.py` | `UmbrellaSamplingPrep`, `GridUmbrellaSamplingPrep`: embed window structures into a template system |
+| `solvent_prep.py` | `SolventSystemPrep`, `GridSolventSystemPrep`: water-box systems and Slurm scripts |
+| `structure_prep.py` | Coordinate replacement, overlap and threaded-lipid fixes |
+| `plumed.py` | PLUMED input writers and `plumed driver` checks |
+| `gmx_stages.py` | Run grompp/mdrun stage chains over window directories |
+| `smart_selector.py` | DSSP-based atom selection |
+| `metrics.py` | RMSD, SASA and distance CVs |
+| `adaptive_reweighting.py` | Importance-sampling reweighting of adaptive ensembles |
+| `pore_profiles.py` | `PoreProfiler`: HOLE pore profiles |
+| `pdb_fetch.py` | Fetch experimental structures for a UniProt ID |
 
 ---
 

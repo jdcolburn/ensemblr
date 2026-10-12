@@ -1,0 +1,15 @@
+# conda env create -f environment.yml && conda activate ensemblr
+# Python packages come from pyproject.toml via pip; conda supplies the external
+# programs ensemblr calls.  ColabFold (localcolabfold) is installed separately;
+# see the README.
+name: ensemblr
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - pip
+  - dssp        # mkdssp: secondary-structure atom selection
+  - plumed      # plumed driver: checking US window CVs
+  # - hole2     # pore profiles (PoreProfiler); not built for Apple Silicon Macs
+  - pip:
+      - -e .[notebook,test]

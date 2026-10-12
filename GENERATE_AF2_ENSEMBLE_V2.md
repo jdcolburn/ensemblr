@@ -1,14 +1,28 @@
-# generate_af2_ensemble_v2.py
+# ensemblr-generate
 
 Template-directed adaptive AF2 ensemble generator. Runs ColabFold iteratively, using PCA of the growing structure pool to identify under-sampled regions of conformational space and target them with custom structural templates.
 
+The `ensemblr-generate` command is installed with the package (see the README).
+`generate_af2_ensemble_v2.py` in the repo root runs the same thing.
+
 ## Quickstart
+
+ColabFold is not installed with ensemblr. Install
+[localcolabfold](https://github.com/YoshitakaMo/localcolabfold), then either put `colabfold_batch`
+on your `PATH` or tell ensemblr where it is:
+
+```bash
+export COLABFOLD_DIR=/path/to/localcolabfold    # or pass --colabfold-dir
+```
+
+`mkdssp` should also be on `PATH` (it is in the conda environment). Without it the PCA uses all Cα
+atoms and ignores `--pca-exclude`/`--pca-include`. Check the dependency report at the top of the log.
 
 From a target directory containing `input.fasta`:
 
 ```bash
-python generate_af2_ensemble_v2.py --dry-run   # check the probe schedule
-python generate_af2_ensemble_v2.py             # writes synthetic_ensemble/
+ensemblr-generate --dry-run   # check the probe schedule
+ensemblr-generate             # writes synthetic_ensemble/
 ```
 
 The defaults are the production settings: pLDDT > 80 gated on the secondary-structure core
@@ -19,10 +33,10 @@ Rerun the same command to resume, or with a larger `--max-rounds` to extend.
 Common variations:
 
 ```bash
-python generate_af2_ensemble_v2.py --score-metric iptm               # multimer
-python generate_af2_ensemble_v2.py --quality-thresh-pct 0.9          # never reaches pLDDT 80
-python generate_af2_ensemble_v2.py --pca-exclude "resid 1:120"       # ignore a domain
-python generate_af2_ensemble_v2.py --fill --fill-interpolate --dry-run   # fill PC1 gaps afterwards
+ensemblr-generate --score-metric iptm               # multimer
+ensemblr-generate --quality-thresh-pct 0.9          # never reaches pLDDT 80
+ensemblr-generate --pca-exclude "resid 1:120"       # ignore a domain
+ensemblr-generate --fill --fill-interpolate --dry-run   # fill PC1 gaps afterwards
 ```
 
 ---

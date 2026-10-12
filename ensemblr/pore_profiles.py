@@ -201,7 +201,7 @@ class PoreProfiler:
             conda install -c conda-forge hole2
 
     memembed_executable : str
-        Path to the memembed binary used to align structures to the membrane
+        memembed executable name (if on PATH) or full path, used to align structures to the membrane
         plane before running HOLE.
     radius_file : str or None
         Path to a HOLE VdW radius file (simple.rad or amber.rad).
@@ -212,7 +212,7 @@ class PoreProfiler:
         self,
         ensemble,
         hole_executable: str = 'hole',
-        memembed_executable: str = '/biggin/b212/bioc1781/software/memembed/bin/memembed',
+        memembed_executable: str = 'memembed',
         radius_file: str | None = None,
     ):
         self.ens = ensemble
@@ -254,6 +254,11 @@ class PoreProfiler:
         checkpoint : bool
             If True, skip structures whose results are already in the pickle file.
         """
+        for label, exe in (('HOLE', self.hole_exe), ('memembed', self.memembed_exe)):
+            if shutil.which(exe) is None:
+                raise FileNotFoundError(
+                    f"{label} executable '{exe}' not found.  Put it on PATH or pass "
+                    f"{'hole' if label == 'HOLE' else 'memembed'}_executable='/full/path'.")
         radius_file = self.radius_file or _find_radius_file(self.hole_exe)
 
         aligned_dir = os.path.join(out_dir, 'memembed_aligned')
