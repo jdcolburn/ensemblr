@@ -1295,7 +1295,10 @@ def check_dependencies(dry_run=False):
     dssp_path = _shutil.which('mkdssp')
     if dssp_path:
         try:
-            subprocess.run(['mkdssp', '--version'], capture_output=True, timeout=10)
+            proc = subprocess.run(['mkdssp', '--version'], capture_output=True,
+                                  text=True, timeout=10)
+            if proc.returncode != 0:
+                raise RuntimeError((proc.stderr or proc.stdout).strip().splitlines()[-1])
             print(f'    mkdssp           ✓  ({dssp_path})')
         except Exception as e:
             print(f'    mkdssp           ⚠  found but failed to run ({e})')
@@ -2579,6 +2582,11 @@ def main():
                         'Symbols: . empty  ░ sparse  █ well-sampled.')
 
     args = p.parse_args()
+
+    if not os.path.isfile(args.fasta):
+        p.print_help()
+        p.exit(2, f'\nerror: FASTA file not found: {args.fasta}  (run from a '
+                  f'directory containing input.fasta, or pass the FASTA path)\n')
 
     global _COLABFOLD_DIR
     if args.colabfold_dir:
