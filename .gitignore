@@ -150,3 +150,5 @@ dist/
 *.egg-info/
 ensemblr/_version.py
 .vscode/
+example_notebook_clean.ipynb
+generate_af2_ensemble.sh

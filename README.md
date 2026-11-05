@@ -115,7 +115,8 @@ These are not Python packages, so pip can't install them. Install the ones you n
 1. Generate an ensemble: `ensemblr-generate --dry-run`, then `ensemblr-generate`, from a directory
    containing `input.fasta`. See `GENERATE_AF2_ENSEMBLE_V2.md` for options.
 2. Analyse it and set up umbrella sampling in a notebook: copy one of the example notebooks, edit the
-   settings at the top, and run it top to bottom. `example_notebook_clean.ipynb` is the 1D workflow;
+   settings at the top, and run it top to bottom. `example_notebook_1d_clean.ipynb` (also installed as
+   `ensemblr/templates/umbrella_sampling_1d_template.ipynb`) is the 1D path;
    `example_notebook_2d_grid_clean.ipynb` (also installed as
    `ensemblr/templates/umbrella_sampling_2d_grid_template.ipynb`) is the 2D grid.
 
