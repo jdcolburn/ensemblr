@@ -1,4 +1,5 @@
 import os
+from functools import partial
 from multiprocessing import Pool
 
 import numpy as np
@@ -118,13 +119,14 @@ class GridPathFinder:
     def run(self, n_runs=50, n_steps=1000, num_processes=6,
             reproducible_seeds=False,
             initial_temperature=0.01, cooling_factor=10000,
-            wf_rama=1.0, wf_cv=0.0):
+            wf_rama=1.0, wf_cv=0.0, wf_janin=0.0):
         """
         Run MC simulated annealing in parallel across multiple independent runs.
 
-        Minimises a weighted sum of Ramachandran and CV terms over all
+        Minimises a weighted sum of Ramachandran, CV and Janin terms over all
         4-connected neighbour pairs in the grid.  Requires ensemble.rama_matrix;
-        also requires ensemble.cv_matrix when wf_cv > 0.
+        also requires ensemble.cv_matrix when wf_cv > 0 and
+        ensemble.janin_matrix when wf_janin > 0.
 
         Parameters
         ----------
@@ -142,6 +144,9 @@ class GridPathFinder:
         wf_cv : float
             Weight for the CV difference term.  Uses ensemble.cv_matrix (the
             primary CV set by compute_matrices).  Default 0.0 — disabled.
+        wf_janin : float
+            Weight for the sidechain (χ1/χ2) smoothness term.  Requires
+            ensemble.compute_matrices(janin=True).  Default 0.0 — disabled.
 
         Returns
         -------
@@ -167,6 +172,14 @@ class GridPathFinder:
                 )
             cv2_matrix = self.ensemble.cv2_matrix  # may be None; combined if present
 
+        janin_matrix = None
+        if wf_janin > 0:
+            janin_matrix = self.ensemble.janin_matrix
+            if janin_matrix is None:
+                raise RuntimeError(
+                    'wf_janin > 0 needs ensemble.compute_matrices(janin=True) first'
+                )
+
         df = self.ensemble.df
         struct_to_idx = {s: i for i, s in enumerate(df.index)}
         bin_members = {k: list(v) for k, v in self._bin_members.items()}
@@ -174,23 +187,34 @@ class GridPathFinder:
         seeds = (list(range(n_runs)) if reproducible_seeds
                  else list(np.random.randint(0, 10000, size=n_runs)))
 
-        args = [
-            (seed, self._initial_grid, self._active_cells, rama_matrix,
-             struct_to_idx, bin_members, n_steps,
-             initial_temperature, cooling_factor, True,
-             wf_rama, wf_cv, cv_matrix, cv2_matrix)
-            for seed in seeds
-        ]
+        worker = partial(
+            mc_grid_optimisation,
+            initial_grid=self._initial_grid,
+            active_cells=self._active_cells,
+            rama_matrix=rama_matrix,
+            struct_to_idx=struct_to_idx,
+            bin_members=bin_members,
+            mc_n_steps=n_steps,
+            initial_temperature=initial_temperature,
+            cooling_factor=cooling_factor,
+            debug=True,
+            wf_rama=wf_rama,
+            wf_cv=wf_cv,
+            cv_matrix=cv_matrix,
+            cv2_matrix=cv2_matrix,
+            wf_janin=wf_janin,
+            janin_matrix=janin_matrix,
+        )
 
         with Pool(processes=num_processes) as pool:
             results = list(tqdm(
-                pool.starmap(mc_grid_optimisation, args),
+                pool.map(worker, seeds),
                 total=n_runs, desc='MC grid optimisation',
             ))
 
         self.runs_list = sorted(results, key=lambda x: x[0])
         self.best_grid = self.runs_list[0][1]
-        print(f'Best grid energy (Rama RMSE): {self.runs_list[0][0]:.4f}')
+        print(f'Best grid energy (weighted RMSE): {self.runs_list[0][0]:.4f}')
         return self
 
     # ── Results ───────────────────────────────────────────────────────────────

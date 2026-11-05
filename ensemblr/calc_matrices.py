@@ -256,6 +256,9 @@ def get_janin_overlap_matrix(dataframe, structure_directory):
     """
     Compute a pairwise cosine similarity matrix for all structures in a dataframe using JAX.
 
+    Deprecated: cosine similarity of raw angles ignores periodicity and loads
+    every pair from disk. Use get_janin_matrix instead.
+
     Parameters:
     - dataframe: pandas.DataFrame, contains structure filenames in the 'structure' column.
     - structure_directory: str, directory containing the structure files.
@@ -294,6 +297,68 @@ def _read_pdb_coords(path):
     return np.array(coords, dtype=np.float32)
 
 
+def _load_ensemble_universe(files):
+    """Build an MDA Universe holding every structure in files as one frame each.
+
+    Topology comes from the first structure only; all coordinates are injected
+    via MemoryReader so dihedral analyses run once over N frames instead of N times.
+    """
+    from MDAnalysis.coordinates.memory import MemoryReader
+
+    u = mda.Universe(files[0])
+    all_coords = np.array(
+        [_read_pdb_coords(f) for f in tqdm(files, desc='Loading coordinates')]
+    )
+    u.load_new(all_coords, format=MemoryReader)
+    return u
+
+
+def _circular_distance_matrix(angles, dataframe, sparse=False, cv_column=None,
+                              chunk_size=64, desc='Dihedral matrix'):
+    """
+    Pairwise circular distance d = sqrt(mean(2*(1-cos(Δθ)))) between frames.
+
+    Parameters
+    ----------
+    angles : np.ndarray, shape (n, n_residues, n_angles)
+        Dihedral angles in radians, one row per structure in dataframe order.
+    dataframe, sparse, cv_column, chunk_size
+        As in get_ramachandran_matrix.
+    desc : str
+        Progress bar label.
+
+    Returns
+    -------
+    matrix : np.ndarray, shape (n, n)
+    """
+    if sparse and cv_column is None:
+        raise ValueError('cv_column is required when sparse=True')
+
+    n = len(angles)
+    matrix = np.zeros((n, n), dtype=np.float32)
+
+    if sparse:
+        bin_pairs = _get_neighbor_bin_indices(dataframe, cv_column)
+        for idxs_a, idxs_b in tqdm(bin_pairs, desc=f'{desc} (sparse)'):
+            na, nb = len(idxs_a), len(idxs_b)
+            block = np.zeros((na, nb), dtype=np.float32)
+            for i0 in range(0, na, chunk_size):
+                i1 = min(i0 + chunk_size, na)
+                diff = angles[idxs_a[i0:i1]][:, np.newaxis, :, :] - angles[idxs_b][np.newaxis, :, :, :]
+                block[i0:i1] = np.sqrt(np.mean(2.0 * (1.0 - np.cos(diff)), axis=(-2, -1)))
+            matrix[np.ix_(idxs_a, idxs_b)] = block
+            matrix[np.ix_(idxs_b, idxs_a)] = block.T
+    else:
+        # Compute pairwise matrix in chunks to avoid the (n, n, n_res, n_angles) broadcast
+        # that would require tens of GB for large ensembles.
+        for i in tqdm(range(0, n, chunk_size), desc=desc):
+            end = min(i + chunk_size, n)
+            diff = angles[i:end, np.newaxis, :, :] - angles[np.newaxis, :, :, :]
+            matrix[i:end] = np.sqrt(np.mean(2.0 * (1.0 - np.cos(diff)), axis=(-2, -1)))
+
+    return matrix
+
+
 def get_ramachandran_matrix(dataframe, structure_directory, selection='protein', chunk_size=64,
                             sparse=False, cv_column=None):
     """
@@ -325,47 +390,63 @@ def get_ramachandran_matrix(dataframe, structure_directory, selection='protein',
     matrix : np.ndarray, shape (n_structures, n_structures)
         Pairwise Ramachandran circular distance matrix.
     """
-    from MDAnalysis.coordinates.memory import MemoryReader
-
     if sparse and cv_column is None:
         raise ValueError('cv_column is required when sparse=True')
 
-    n = len(dataframe)
-    files = [structure_directory + f for f in dataframe.index]
-
-    # Build topology from the first structure only, then inject all coordinates
-    # via MemoryReader so Ramachandran runs once over N frames instead of N times.
-    u = mda.Universe(files[0])
-    all_coords = np.array(
-        [_read_pdb_coords(f) for f in tqdm(files, desc='Loading coordinates')]
-    )
-    u.load_new(all_coords, format=MemoryReader)
-    del all_coords  # free before the heavy angle computation
-
+    u = _load_ensemble_universe([structure_directory + f for f in dataframe.index])
     rama = Ramachandran(u.select_atoms(selection))
     rama.run()
     angles = np.deg2rad(rama.angles).astype(np.float32)  # (n, n_residues, 2)
 
-    matrix = np.zeros((n, n), dtype=np.float32)
+    return _circular_distance_matrix(angles, dataframe, sparse=sparse, cv_column=cv_column,
+                                     chunk_size=chunk_size, desc='Rama matrix')
 
-    if sparse:
-        bin_pairs = _get_neighbor_bin_indices(dataframe, cv_column)
-        for idxs_a, idxs_b in tqdm(bin_pairs, desc='Rama matrix (sparse)'):
-            na, nb = len(idxs_a), len(idxs_b)
-            block = np.zeros((na, nb), dtype=np.float32)
-            for i0 in range(0, na, chunk_size):
-                i1 = min(i0 + chunk_size, na)
-                diff = angles[idxs_a[i0:i1]][:, np.newaxis, :, :] - angles[idxs_b][np.newaxis, :, :, :]
-                block[i0:i1] = np.sqrt(np.mean(2.0 * (1.0 - np.cos(diff)), axis=(-2, -1)))
-            matrix[np.ix_(idxs_a, idxs_b)] = block
-            matrix[np.ix_(idxs_b, idxs_a)] = block.T
-    else:
-        # Compute pairwise matrix in chunks to avoid the (n, n, n_res, 2) broadcast
-        # that would require tens of GB for large ensembles.
-        for i in tqdm(range(0, n, chunk_size), desc='Rama matrix'):
-            end = min(i + chunk_size, n)
-            diff = angles[i:end, np.newaxis, :, :] - angles[np.newaxis, :, :, :]
-            matrix[i:end] = np.sqrt(np.mean(2.0 * (1.0 - np.cos(diff)), axis=(-2, -1)))
 
-    return matrix
+# Residues whose χ2 is two-fold symmetric (ring flip / carboxylate swap):
+# χ2 and χ2 + 180° describe the same conformation.
+_SYMMETRIC_CHI2 = ('PHE', 'TYR', 'ASP')
 
+
+def get_janin_matrix(dataframe, structure_directory, selection='protein', chunk_size=64,
+                     sparse=False, cv_column=None):
+    """
+    Compute a pairwise circular distance matrix in Janin (χ1/χ2) space.
+
+    Same metric as get_ramachandran_matrix, d = sqrt(mean(2*(1-cos(Δχ)))),
+    over the sidechain dihedrals of every residue in the selection that has a
+    χ2 (MDAnalysis Janin drops Ala, Cys, Gly, Pro, Ser, Thr and Val). For
+    Phe, Tyr and Asp χ2 is doubled before differencing, so a ring flip or
+    carboxylate swap counts as zero distance. Values range from 0 to 2.
+
+    Parameters
+    ----------
+    dataframe : pandas.DataFrame
+        Indexed by PDB filename. Must contain a 'bin' column when sparse=True.
+    structure_directory : str
+        Directory containing the PDB files.
+    selection : str
+        MDAnalysis atom selection; χ angles are computed for the residues it
+        touches (e.g. Ensemble.rmsd_selection, which may be CA-only).
+    chunk_size, sparse, cv_column
+        As in get_ramachandran_matrix.
+
+    Returns
+    -------
+    matrix : np.ndarray, shape (n_structures, n_structures)
+        Pairwise Janin circular distance matrix.
+    """
+    if sparse and cv_column is None:
+        raise ValueError('cv_column is required when sparse=True')
+
+    u = _load_ensemble_universe([structure_directory + f for f in dataframe.index])
+    janin = Janin(u.select_atoms(selection))
+    janin.run()
+    angles = np.deg2rad(janin.results.angles).astype(np.float32)  # (n, n_residues, 2)
+
+    symmetric = np.isin(janin.ag1.resnames, _SYMMETRIC_CHI2)
+    angles[:, symmetric, 1] *= 2.0
+    print(f'Janin: {angles.shape[1]} residues with χ1/χ2 '
+          f'({int(symmetric.sum())} with symmetric χ2)')
+
+    return _circular_distance_matrix(angles, dataframe, sparse=sparse, cv_column=cv_column,
+                                     chunk_size=chunk_size, desc='Janin matrix')

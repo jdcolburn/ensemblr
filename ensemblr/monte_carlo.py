@@ -4,11 +4,23 @@ import gc
 import numpy as np
 
 
+def _rms_step(path, matrix, struct_to_idx):
+    """sqrt(Σ matrix[path[i], path[i+1]]² / len(path)) over consecutive path pairs."""
+    total = 0.0
+    for i in range(len(path) - 1):
+        total += matrix[struct_to_idx[path[i]], struct_to_idx[path[i + 1]]] ** 2
+    return np.sqrt(total / len(path))
+
+
 def calc_energy(path, rmsd_matrix, cv_matrix, struct_to_idx,
-                odf_matrix=None, dos_matrix=None,
-                wf_rmsd=0.1, wf_cv=1, wf_odf=0.0, wf_dos=0.0):
+                odf_matrix=None, janin_matrix=None,
+                wf_rmsd=0.1, wf_cv=1, wf_odf=0.0, wf_janin=0.0):
     """
     Calculate the "energy" of a path.
+
+    Each term is the weighted RMS of a pairwise matrix over consecutive
+    structures in the path. Optional terms are skipped when their matrix is
+    None or their weight is 0.
 
     Uses plain dict lookups (struct_to_idx) instead of a DataFrame so the
     function is safe to call from multiprocessing workers.
@@ -18,63 +30,38 @@ def calc_energy(path, rmsd_matrix, cv_matrix, struct_to_idx,
     path : sequence of str
         Ordered structure filenames.
     rmsd_matrix : np.ndarray  (N x N)
+        Step-cost matrix (RMSD or Ramachandran).
     cv_matrix : np.ndarray    (N x N)
     struct_to_idx : dict
         {structure_filename: row/col index in the matrices}
     odf_matrix : np.ndarray or None
         Optional orthogonal DOF matrix (e.g. a second PC).
-    dos_matrix : np.ndarray or None
-        Optional density-of-states matrix.
-    wf_rmsd, wf_cv, wf_odf, wf_dos : float
+    janin_matrix : np.ndarray or None
+        Optional sidechain (χ1/χ2) distance matrix.
+    wf_rmsd, wf_cv, wf_odf, wf_janin : float
         Weighting coefficients for each energy term.
 
     Returns
     -------
     float
     """
-    path_length = len(path)
-
-    energy_rmsd = 0.0
-    for i in range(path_length - 1):
-        ii = struct_to_idx[path[i]]
-        jj = struct_to_idx[path[i + 1]]
-        energy_rmsd += rmsd_matrix[ii, jj] ** 2
-    energy_rmsd = wf_rmsd * np.sqrt(energy_rmsd / path_length)
-
-    energy_cv = 0.0
-    for i in range(path_length - 1):
-        ii = struct_to_idx[path[i]]
-        jj = struct_to_idx[path[i + 1]]
-        energy_cv += cv_matrix[ii, jj] ** 2
-    energy_cv = wf_cv * np.sqrt(energy_cv / path_length)
-
-    energy_odf = 0.0
-    if odf_matrix is not None:
-        for i in range(path_length - 1):
-            ii = struct_to_idx[path[i]]
-            jj = struct_to_idx[path[i + 1]]
-            energy_odf += odf_matrix[ii, jj] ** 2
-        energy_odf = wf_odf * np.sqrt(energy_odf / path_length)
-
-    energy_dos = 0.0
-    if dos_matrix is not None:
-        for i in range(path_length - 1):
-            ii = struct_to_idx[path[i]]
-            jj = struct_to_idx[path[i + 1]]
-            energy_dos += dos_matrix[ii, jj]
-        energy_dos = wf_dos * (energy_dos / path_length)
-
-    return energy_rmsd + energy_cv + energy_odf + energy_dos
+    energy = (wf_rmsd * _rms_step(path, rmsd_matrix, struct_to_idx)
+              + wf_cv * _rms_step(path, cv_matrix, struct_to_idx))
+    if odf_matrix is not None and wf_odf:
+        energy += wf_odf * _rms_step(path, odf_matrix, struct_to_idx)
+    if janin_matrix is not None and wf_janin:
+        energy += wf_janin * _rms_step(path, janin_matrix, struct_to_idx)
+    return energy
 
 
 def mc_path_optimisation(seed, initial_guess_indices,
                          rmsd_matrix, cv_matrix,
                          struct_to_idx, bin_lookup, bin_members,
                          fixed_endpoints=True,
-                         odf_matrix=None, dos_matrix=None,
+                         odf_matrix=None, janin_matrix=None,
                          mc_n_steps=1000, initial_temperature=0.0001,
                          cooling_factor=10000, debug=True,
-                         wf_step=0.1, wf_cv=1.0, wf_odf=0.0):
+                         wf_step=0.1, wf_cv=1.0, wf_odf=0.0, wf_janin=0.0):
     """
     Optimize a path using Monte Carlo simulated annealing.
 
@@ -91,9 +78,11 @@ def mc_path_optimisation(seed, initial_guess_indices,
     bin_members : dict
         {bin_id: [structure, ...]} — precomputed from ensemble.df['bin'].
     fixed_endpoints : bool
-    odf_matrix, dos_matrix : np.ndarray or None
+    odf_matrix, janin_matrix : np.ndarray or None
     mc_n_steps : int
     initial_temperature, cooling_factor : float
+    wf_step, wf_cv, wf_odf, wf_janin : float
+        Weights passed to calc_energy (wf_step is its wf_rmsd).
 
     Returns
     -------
@@ -106,6 +95,11 @@ def mc_path_optimisation(seed, initial_guess_indices,
         np.log10(initial_temperature), np.log10(final_temperature),
         num=mc_n_steps,
     )
+
+    def energy_of(path):
+        return calc_energy(path, rmsd_matrix, cv_matrix, struct_to_idx,
+                           odf_matrix, janin_matrix,
+                           wf_rmsd=wf_step, wf_cv=wf_cv, wf_odf=wf_odf, wf_janin=wf_janin)
 
     mcpath = list(initial_guess_indices)   # plain Python list throughout
     path_energies = {}                     # energy → tuple(path)
@@ -127,10 +121,8 @@ def mc_path_optimisation(seed, initial_guess_indices,
             new_mcpath = mcpath.copy()
             new_mcpath[point] = random_structure
 
-            energy     = calc_energy(mcpath,     rmsd_matrix, cv_matrix, struct_to_idx,
-                                     odf_matrix, dos_matrix, wf_rmsd=wf_step, wf_cv=wf_cv, wf_odf=wf_odf)
-            new_energy = calc_energy(new_mcpath, rmsd_matrix, cv_matrix, struct_to_idx,
-                                     odf_matrix, dos_matrix, wf_rmsd=wf_step, wf_cv=wf_cv, wf_odf=wf_odf)
+            energy     = energy_of(mcpath)
+            new_energy = energy_of(new_mcpath)
             delta_energy = new_energy - energy
 
             if delta_energy < 0 or np.random.rand() < np.exp(-delta_energy / temperature):
@@ -142,8 +134,7 @@ def mc_path_optimisation(seed, initial_guess_indices,
         final_path   = list(path_energies[final_energy])
     else:
         # no moves accepted — return the initial path
-        final_energy = float(calc_energy(mcpath, rmsd_matrix, cv_matrix, struct_to_idx,
-                                         odf_matrix, dos_matrix, wf_rmsd=wf_step, wf_cv=wf_cv, wf_odf=wf_odf))
+        final_energy = float(energy_of(mcpath))
         final_path   = list(mcpath)
 
     final_path_structures = tuple(final_path)
@@ -157,13 +148,14 @@ def mc_path_optimisation(seed, initial_guess_indices,
 def mc_grid_optimisation(seed, initial_grid, active_cells, rama_matrix, struct_to_idx,
                          bin_members, mc_n_steps=1000, initial_temperature=0.01,
                          cooling_factor=10000, debug=True,
-                         wf_rama=1.0, wf_cv=0.0, cv_matrix=None, cv2_matrix=None):
+                         wf_rama=1.0, wf_cv=0.0, cv_matrix=None, cv2_matrix=None,
+                         wf_janin=0.0, janin_matrix=None):
     """
     Optimise a 2D grid of structure assignments using Monte Carlo simulated annealing.
 
     Each active cell holds one structure; the energy is a weighted sum of
-    Ramachandran and (optionally) CV difference terms over all 4-connected
-    neighbour edges.  Local energy updates are used so each per-cell move
+    Ramachandran and (optionally) CV difference and Janin terms over all
+    4-connected neighbour edges.  Local energy updates are used so each per-cell move
     costs O(neighbours) rather than O(grid).
 
     Parameters
@@ -197,6 +189,10 @@ def mc_grid_optimisation(seed, initial_grid, active_cells, rama_matrix, struct_t
         Pairwise secondary-CV difference matrix (e.g. a second PC).
         Combined with cv_matrix as Euclidean distance: sqrt(cv1² + cv2²).
         Optional even when wf_cv > 0.
+    wf_janin : float
+        Weight for the sidechain (χ1/χ2) distance term (default 0.0 — disabled).
+    janin_matrix : np.ndarray or None
+        Pairwise Janin distance matrix.  Required when wf_janin > 0.
 
     Returns
     -------
@@ -212,6 +208,9 @@ def mc_grid_optimisation(seed, initial_grid, active_cells, rama_matrix, struct_t
         np.log10(initial_temperature), np.log10(final_temperature),
         num=mc_n_steps,
     )
+
+    if not wf_janin:
+        janin_matrix = None
 
     grid = dict(initial_grid)
     active_set = set(map(tuple, active_cells))
@@ -247,6 +246,8 @@ def mc_grid_optimisation(seed, initial_grid, active_cells, rama_matrix, struct_t
                     cv1 = float(cv_matrix[ii, jj]) ** 2
                     cv2 = float(cv2_matrix[ii, jj]) ** 2 if cv2_matrix is not None else 0.0
                     running_sq += wf_cv * (cv1 + cv2)
+                if janin_matrix is not None:
+                    running_sq += wf_janin * float(janin_matrix[ii, jj]) ** 2
 
     best_sq = running_sq
     best_grid = dict(grid)
@@ -278,6 +279,9 @@ def mc_grid_optimisation(seed, initial_grid, active_cells, rama_matrix, struct_t
                     cv2_new = float(cv2_matrix[ii_new, jj]) ** 2 if cv2_matrix is not None else 0.0
                     cv2_old = float(cv2_matrix[ii_old, jj]) ** 2 if cv2_matrix is not None else 0.0
                     delta_sq += wf_cv * ((cv1_new + cv2_new) - (cv1_old + cv2_old))
+                if janin_matrix is not None:
+                    delta_sq += wf_janin * (float(janin_matrix[ii_new, jj]) ** 2
+                                            - float(janin_matrix[ii_old, jj]) ** 2)
 
             if delta_sq < 0 or np.random.rand() < np.exp(-delta_sq / temperature):
                 grid[cell] = random_structure

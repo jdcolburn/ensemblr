@@ -1,4 +1,5 @@
 import os
+from functools import partial
 from multiprocessing import Pool
 
 import numpy as np
@@ -73,7 +74,7 @@ class MCPathFinder:
 
     def run(self, n_runs=100, n_steps=1000, num_processes=6,
             reproducible_seeds=False, fixed_endpoints=True, step_matrix=None,
-            wf_step=1.0, wf_cv=1.0, wf_odf=0.0):
+            wf_step=1.0, wf_cv=1.0, wf_odf=0.0, wf_janin=0.0):
         """
         Run MC simulated annealing in parallel and store results in runs_df.
 
@@ -91,6 +92,12 @@ class MCPathFinder:
         wf_step : float
             Weight for the step-cost (RMSD or Rama) energy term relative to
             the CV term (wf_cv=1). Default 1.0 balances both contributions.
+        wf_odf : float
+            Weight for the orthogonal-DOF term (ensemble.cv2_matrix).
+            Default 0.0 — disabled.
+        wf_janin : float
+            Weight for the sidechain (χ1/χ2) smoothness term. Requires
+            ensemble.compute_matrices(janin=True). Default 0.0 — disabled.
 
         Returns
         -------
@@ -113,6 +120,14 @@ class MCPathFinder:
 
         cv2_mat = self.ensemble.cv2_matrix  # may be None
 
+        janin_mat = None
+        if wf_janin > 0:
+            janin_mat = self.ensemble.janin_matrix
+            if janin_mat is None:
+                raise RuntimeError(
+                    'wf_janin > 0 needs ensemble.compute_matrices(janin=True) first'
+                )
+
         # Precompute plain-Python lookups so workers receive no DataFrame
         df = self.ensemble.df
         struct_to_idx = {s: i for i, s in enumerate(df.index)}
@@ -123,25 +138,26 @@ class MCPathFinder:
 
         with Pool(processes=num_processes) as pool:
             results = list(tqdm(
-                pool.starmap(mc_path_optimisation, zip(
-                    seeds,
-                    [self._initial_path] * n_runs,
-                    [step_matrix] * n_runs,
-                    [self.ensemble.cv_matrix] * n_runs,
-                    [struct_to_idx] * n_runs,
-                    [bin_lookup] * n_runs,
-                    [bin_members] * n_runs,
-                    [fixed_endpoints] * n_runs,
-                    [cv2_mat] * n_runs,
-                    [None] * n_runs,     # dos_matrix
-                    [n_steps] * n_runs,  # mc_n_steps
-                    [0.0001] * n_runs,   # initial_temperature
-                    [10000] * n_runs,    # cooling_factor
-                    [True] * n_runs,     # debug
-                    [wf_step] * n_runs,
-                    [wf_cv] * n_runs,
-                    [wf_odf] * n_runs,
-                )),
+                pool.map(partial(
+                    mc_path_optimisation,
+                    initial_guess_indices=self._initial_path,
+                    rmsd_matrix=step_matrix,
+                    cv_matrix=self.ensemble.cv_matrix,
+                    struct_to_idx=struct_to_idx,
+                    bin_lookup=bin_lookup,
+                    bin_members=bin_members,
+                    fixed_endpoints=fixed_endpoints,
+                    odf_matrix=cv2_mat,
+                    janin_matrix=janin_mat,
+                    mc_n_steps=n_steps,
+                    initial_temperature=0.0001,
+                    cooling_factor=10000,
+                    debug=True,
+                    wf_step=wf_step,
+                    wf_cv=wf_cv,
+                    wf_odf=wf_odf,
+                    wf_janin=wf_janin,
+                ), seeds),
                 total=n_runs, desc='MC optimisation'
             ))
 

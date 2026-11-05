@@ -13,7 +13,8 @@ from tqdm import tqdm
 
 from .smart_selector import generate_selection_token
 from .metrics import get_rmsd_to_ref, get_sasa, calc_distance, calc_all_distances
-from .calc_matrices import pdb_to_coordinates, get_rmsdmat_jax, get_diffmat, get_ramachandran_matrix
+from .calc_matrices import (pdb_to_coordinates, get_rmsdmat_jax, get_diffmat,
+                            get_ramachandran_matrix, get_janin_matrix)
 from .pdb_fetch import fetch_uniprot_pdb_ids, download_pdb
 
 
@@ -41,6 +42,9 @@ class Ensemble:
         Pairwise CV difference matrix, set by compute_matrices().
     cv2_matrix : np.ndarray or None
         Optional second CV difference matrix.
+    janin_matrix : np.ndarray or None
+        Optional pairwise sidechain (χ1/χ2) distance matrix, set by
+        compute_matrices(janin=True).
     pca : MDAnalysis PCA object
         Set by run_pca().
     """
@@ -54,6 +58,7 @@ class Ensemble:
         self.rama_matrix = None
         self.cv_matrix = None
         self.cv2_matrix = None
+        self.janin_matrix = None
         self.pca = None
         self._universe = None       # aligned in-memory MDA universe
         self._ensemble_pdb = None   # path to the written aligned ensemble PDB
@@ -605,7 +610,8 @@ class Ensemble:
 
     # ── Matrices ──────────────────────────────────────────────────────────────
 
-    def compute_matrices(self, cv_column='PC1', cv2_column=None, step_matrix='rmsd', sparse=False):
+    def compute_matrices(self, cv_column='PC1', cv2_column=None, step_matrix='rmsd', sparse=False,
+                         janin=False):
         """
         Compute the pairwise step-cost matrix and CV difference matrix.
         Stores results in self.cv_matrix (and optionally self.cv2_matrix), plus
@@ -624,6 +630,10 @@ class Ensemble:
             (ordered by mean CV), leaving all other entries as 0. Requires that
             MCPathFinder.bin_structures() has already been called so that self.df
             contains a 'bin' column. Default False (full dense matrix).
+        janin : bool
+            If True, also compute self.janin_matrix (sidechain χ1/χ2 distances)
+            over the residues in self.rmsd_selection, for the optional Janin
+            term in the MC objective. Default False.
 
         Returns
         -------
@@ -655,4 +665,11 @@ class Ensemble:
             )
             print(f'Matrices computed — RMSD: {self.rmsd_matrix.shape}, '
                   f'CV ({cv_column}): {self.cv_matrix.shape}')
+
+        if janin:
+            self.janin_matrix = get_janin_matrix(
+                self.df, self.structure_directory, selection=self.rmsd_selection,
+                sparse=sparse, cv_column=cv_column,
+            )
+            print(f'Janin matrix computed: {self.janin_matrix.shape}')
         return self
