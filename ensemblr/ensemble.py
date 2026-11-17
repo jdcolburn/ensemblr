@@ -61,6 +61,7 @@ class Ensemble:
         self.janin_matrix = None
         self.pca = None
         self._universe = None       # aligned in-memory MDA universe
+        self._universe_names = None # structure name of each frame of _universe
         self._ensemble_pdb = None   # path to the written aligned ensemble PDB
         self._ref_structures = []
 
@@ -228,6 +229,8 @@ class Ensemble:
         )
         if output_file:
             mda.Universe(ref_pdb).select_atoms(self.rmsd_selection).write(output_file)
+            with open(os.path.join(os.path.dirname(output_file) or '.', 'rmsd_selection.txt'), 'w') as fh:
+                fh.write(self.rmsd_selection + '\n')
         return self
 
     # ── PCA ───────────────────────────────────────────────────────────────────
@@ -298,7 +301,11 @@ class Ensemble:
 
         self.pca = pc
         self._universe = u
+        self._universe_names = list(self.df.index)
         self._ensemble_pdb = ensemble_pdb
+        if output_dir:
+            with open(os.path.join(output_dir, 'rmsd_selection.txt'), 'w') as fh:
+                fh.write(self.rmsd_selection + '\n')
         cumvar = {i+1: round(float(v) * 100, 1)
                   for i, v in enumerate(pc.cumulated_variance[:n_components])}
         print(f'PCA complete. Cumulative variance (%): {cumvar}')
@@ -607,6 +614,375 @@ class Ensemble:
             except Exception as exc:
                 print(f'  Warning: could not project {label}: {exc}')
         return pd.DataFrame(rows).T[pc_cols]
+
+    # ── Saving / reopening an analysis ────────────────────────────────────────
+
+    def save(self, run_dir):
+        """
+        Save the dataframe, PCA and selection to ``run_dir`` so the analysis can be reopened
+        with :meth:`from_run` (the same files the template notebooks checkpoint to):
+        ``ensemble_df.parquet``, ``pca_checkpoint.npz``, ``rmsd_selection.txt``.
+        """
+        os.makedirs(run_dir, exist_ok=True)
+        self.df.to_parquet(os.path.join(run_dir, 'ensemble_df.parquet'))
+        if self.rmsd_selection:
+            with open(os.path.join(run_dir, 'rmsd_selection.txt'), 'w') as fh:
+                fh.write(self.rmsd_selection + '\n')
+        if self.pca is not None:
+            pc_cols = self._pc_columns()
+            np.savez(
+                os.path.join(run_dir, 'pca_checkpoint.npz'),
+                p_components=np.asarray(self.pca.p_components),
+                mean=np.asarray(self.pca.mean).flatten(),
+                cumulated_variance=np.asarray(list(self.pca.cumulated_variance)),
+                variance=np.asarray(list(self.pca.variance[:len(pc_cols)])),
+                **{c: self.df[c].values for c in pc_cols},
+            )
+        return self
+
+    @classmethod
+    def from_run(cls, run_dir, structure_directory=None, rmsd_selection=None):
+        """
+        Reopen an analysed ensemble from a notebook run directory (e.g.
+        ``synthetic_ensemble/run_01/``), without rerunning PCA or the metrics.
+
+        Reads ``ensemble_df.parquet`` (PCs, clusters, metrics), ``pca_checkpoint.npz`` (the PCA
+        model, and the PC columns if the parquet lacks them) and ``rmsd_selection.txt``.
+
+        Parameters
+        ----------
+        run_dir : str
+        structure_directory : str, optional
+            Where the PDBs are. Default: ``<run_dir>/../structures/`` (the generator layout).
+        rmsd_selection : str, optional
+            Selection to superpose on when writing structures. Default: ``rmsd_selection.txt``
+            in run_dir, else the generator's ``pca_selection.txt``, else all Cα.
+        """
+        import types
+        run_dir = os.path.abspath(run_dir)
+        if structure_directory is None:
+            structure_directory = os.path.join(os.path.dirname(run_dir), 'structures')
+        ens = cls(structure_directory, thresh_pLDDT=0)
+
+        df_path = os.path.join(run_dir, 'ensemble_df.parquet')
+        npz_path = os.path.join(run_dir, 'pca_checkpoint.npz')
+        if not os.path.exists(df_path):
+            raise FileNotFoundError(f'{df_path} not found (save an analysis with Ensemble.save)')
+        ens.df = pd.read_parquet(df_path)
+        ens.df.index.name = 'structure'
+
+        if os.path.exists(npz_path):
+            z = np.load(npz_path)
+            for c in sorted((k for k in z.files if k.startswith('PC')), key=lambda k: int(k[2:])):
+                if c not in ens.df.columns and len(z[c]) == len(ens.df):
+                    ens.df[c] = z[c]
+            cum = z['cumulated_variance']
+            ens.pca = types.SimpleNamespace(
+                p_components=z['p_components'], mean=z['mean'], cumulated_variance=cum,
+                variance=(z['variance'] if 'variance' in z.files
+                          else np.diff(np.concatenate([[0], cum]))),
+            )
+
+        for path in (os.path.join(run_dir, 'rmsd_selection.txt'),
+                     os.path.join(os.path.dirname(run_dir), 'pca_selection.txt')):
+            if rmsd_selection is None and os.path.exists(path):
+                with open(path) as fh:
+                    rmsd_selection = fh.read().strip() or None
+        ens.rmsd_selection = rmsd_selection
+
+        pdb = os.path.join(run_dir, 'ensemble.pdb')
+        ens._ensemble_pdb = pdb if os.path.exists(pdb) else None
+
+        missing = [s for s in ens.df.index[:50] if not os.path.exists(ens.structure_directory + s)]
+        if missing:
+            print(f'Warning: e.g. {missing[0]} is not in {ens.structure_directory}')
+        print(f'Opened {len(ens.df)} structures from {run_dir} '
+              f'(columns: {", ".join(ens.df.columns)})')
+        return ens
+
+    # ── Accessing structures ──────────────────────────────────────────────────
+    #
+    # ens.df is the table of everything (one row per structure, indexed by file name).
+    # Anything that picks rows of it (a pandas query, nlargest, a boolean mask, select(),
+    # nearest(), representatives()) can be passed to paths() or write().
+
+    def _pc_columns(self):
+        return sorted((c for c in self.df.columns if c.startswith('PC') and c[2:].isdigit()),
+                      key=lambda c: int(c[2:]))
+
+    def _names(self, structures=None):
+        """Structure names from a DataFrame/Series/mask/Index/list/str (None = all)."""
+        if structures is None:
+            return list(self.df.index)
+        if isinstance(structures, str):
+            names = [structures]
+        elif isinstance(structures, pd.DataFrame):
+            names = list(structures.index)
+        elif isinstance(structures, pd.Series):
+            if structures.dtype == bool:
+                names = list(structures[structures].index)
+            elif structures.index.equals(pd.RangeIndex(len(structures))):
+                names = list(structures.values)     # a plain list of names
+            else:
+                names = list(structures.index)      # e.g. ens.df['PC1'].nlargest(10)
+        elif isinstance(structures, np.ndarray) and structures.dtype == bool:
+            names = list(self.df.index[structures])
+        else:
+            names = [os.path.basename(str(s)) for s in structures]
+        unknown = [s for s in names if s not in self.df.index]
+        if unknown:
+            raise KeyError(f'{len(unknown)} structure(s) not in ens.df, e.g. {unknown[0]!r}')
+        return names
+
+    def paths(self, structures=None):
+        """Absolute PDB paths of ``structures`` (any selection of ens.df rows; None = all)."""
+        return [os.path.abspath(self.structure_directory + s) for s in self._names(structures)]
+
+    def select(self, query=None, **ranges):
+        """
+        Rows of ens.df within ranges of any columns.
+
+        ``ens.select(PC1=(2, None), PC2=(-1, 1))``    PC1 ≥ 2 and −1 ≤ PC2 ≤ 1 (None = open end)
+        ``ens.select(cluster=3)``                       equality
+        ``ens.select(cluster=[1, 2])``                  membership
+        ``ens.select('PC1 > 2 and pLDDT > 85')``        a pandas query string
+        ``ens.select({'rmsd_to_IF': (None, 2)})``       a dict, for column names that aren't
+                                                        valid Python keywords
+        Returns a DataFrame (a view of ens.df rows), which paths() and write() accept.
+        """
+        if isinstance(query, dict):
+            ranges = {**query, **ranges}
+            query = None
+        mask = pd.Series(True, index=self.df.index)
+        for col, r in ranges.items():
+            if col not in self.df.columns:
+                raise KeyError(f'no column {col!r} in ens.df (have: {", ".join(self.df.columns)})')
+            v = self.df[col]
+            if isinstance(r, tuple) and len(r) == 2:
+                lo, hi = r
+                if lo is not None:
+                    mask &= v >= lo
+                if hi is not None:
+                    mask &= v <= hi
+            elif isinstance(r, (list, set, frozenset)):
+                mask &= v.isin(list(r))
+            else:
+                mask &= v == r
+        out = self.df[mask]
+        if query:
+            out = out.query(query)
+        return out
+
+    def nearest(self, n=1, scale=False, **point):
+        """
+        The ``n`` structures closest to a point, e.g. ``ens.nearest(PC1=3.0, PC2=-1.5, n=5)``.
+
+        Distance is Euclidean over the named columns; ``scale=True`` divides each column by its
+        standard deviation first (use it when mixing units, e.g. a PC and a distance).
+        Returns the rows sorted by distance, with a ``distance`` column added.
+        """
+        if not point:
+            raise ValueError('give the point as column=value, e.g. nearest(PC1=3.0, PC2=-1.5)')
+        cols = list(point)
+        X = self.df[cols].to_numpy(float)
+        target = np.array([point[c] for c in cols], float)
+        if scale:
+            sd = X.std(axis=0)
+            sd[sd == 0] = 1.0
+            X, target = X / sd, target / sd
+        d = np.linalg.norm(X - target, axis=1)
+        order = np.argsort(d)[:n]
+        out = self.df.iloc[order].copy()
+        out['distance'] = d[order]
+        return out
+
+    def representatives(self, by='cluster', columns=None, n_bins=None, skip=(-1,)):
+        """
+        One representative structure per group.
+
+        by : a column of labels (default 'cluster', from cluster() or your own clustering):
+            the member closest to the group centroid in ``columns`` (default: all PC columns).
+            Labels in ``skip`` are left out (HDBSCAN noise is −1).
+        n_bins : int, optional
+            Instead treat ``by`` as continuous (e.g. 'PC1'), cut its range into n_bins equal
+            bins, and take the structure closest to each bin centre (empty bins are left out).
+
+        Returns the representative rows, with ``group`` and ``n_members`` columns added.
+        """
+        df = self.df
+        rows, groups, sizes = [], [], []
+        if n_bins is not None:
+            v = df[by].to_numpy(float)
+            edges = np.linspace(v.min(), v.max(), n_bins + 1)
+            idx = np.clip(np.digitize(v, edges[1:-1]), 0, n_bins - 1)
+            for b in range(n_bins):
+                members = np.flatnonzero(idx == b)
+                if len(members) == 0:
+                    continue
+                centre = 0.5 * (edges[b] + edges[b + 1])
+                rows.append(members[np.argmin(np.abs(v[members] - centre))])
+                groups.append(f'{edges[b]:.3g}..{edges[b + 1]:.3g}')
+                sizes.append(len(members))
+        else:
+            if by not in df.columns:
+                raise KeyError(f'no column {by!r} in ens.df; run cluster() or add your own labels')
+            if columns is None:
+                columns = self._pc_columns()
+            X = df[columns].to_numpy(float)
+            labels = df[by].to_numpy()
+            for label in pd.unique(labels):
+                if label in skip:
+                    continue
+                members = np.flatnonzero(labels == label)
+                centroid = X[members].mean(axis=0)
+                rows.append(members[np.argmin(np.linalg.norm(X[members] - centroid, axis=1))])
+                groups.append(label)
+                sizes.append(len(members))
+        out = df.iloc[rows].copy()
+        out['group'] = groups
+        out['n_members'] = sizes
+        if n_bins is None:
+            out = out.sort_values('group')
+        return out
+
+    @property
+    def universe(self):
+        """
+        All structures of ens.df as one aligned in-memory MDAnalysis Universe, one frame per row
+        (frame i = ens.df.index[i] at the time it was built). Built by run_pca(), otherwise on
+        first use from the run's structures.xtc (or, without one, by reading every PDB).
+        """
+        if self._universe is None or self._universe_names != list(self.df.index):
+            from MDAnalysis.coordinates.memory import MemoryReader
+            names = list(self.df.index)
+            coords = np.empty((len(names), self._reference().atoms.n_atoms, 3), dtype=np.float32)
+            for i, ag in enumerate(self._iter_aligned(names, selection='all', align=True)):
+                coords[i] = ag.positions
+            self._universe = mda.Universe(self.structure_directory + names[0], coords,
+                                          format=MemoryReader)
+            self._universe_names = names
+        return self._universe
+
+    def _reference(self):
+        """Superposition reference: the first structure (frame 0 of ensemble.pdb)."""
+        if getattr(self, '_ref_universe', None) is None:
+            self._ref_universe = mda.Universe(self.structure_directory + self.df.index[0])
+        return self._ref_universe
+
+    def _run_trajectory(self):
+        """
+        The generator's ``structures.xtc`` (next to the structures directory) opened as one
+        Universe, with {file name: frame}, or None if there isn't one. Reading frames from it
+        is much faster than opening thousands of symlinked PDBs on NFS.
+        """
+        if getattr(self, '_run_traj', None) is None:
+            import warnings
+            base = os.path.dirname(os.path.abspath(self.structure_directory.rstrip('/')))
+            paths = [os.path.join(base, f) for f in
+                     ('structures.pdb', 'structures.xtc', 'structures_index.csv')]
+            if not all(os.path.exists(p) for p in paths):
+                self._run_traj = False
+            else:
+                idx = pd.read_csv(paths[2])
+                with warnings.catch_warnings():
+                    warnings.simplefilter('ignore')
+                    u = mda.Universe(paths[0], paths[1])
+                if len(u.trajectory) != len(idx):
+                    self._run_traj = False      # stale index; fall back to the PDBs
+                else:
+                    self._run_traj = (u, dict(zip(idx['file'], idx['frame'])))
+        return self._run_traj or None
+
+    def _iter_aligned(self, names, selection='all', align=True):
+        """
+        Yield an AtomGroup per name, superposed on the ensemble reference (the first structure).
+        Source, fastest first: the in-memory universe, the run's structures.xtc, the PDB files.
+        align=False skips the superposition (raw AF2 coordinates from PDBs; the generator's
+        alignment from structures.xtc).
+        """
+        import warnings
+        if align and self._universe is not None and self._universe_names is not None:
+            frame_of = {s: i for i, s in enumerate(self._universe_names)}
+            if all(s in frame_of for s in names):
+                u = self._universe
+                ag = u.select_atoms(selection)
+                for s in names:
+                    u.trajectory[frame_of[s]]
+                    yield ag
+                return
+        ref = self._reference()
+        align_sel = self.rmsd_selection or 'name CA'
+        if len(ref.select_atoms(align_sel)) == 0:
+            align_sel = 'name CA'
+        traj = self._run_trajectory()
+        if traj is not None:
+            u, frame_of = traj
+            if u.atoms.n_atoms == ref.atoms.n_atoms and all(s in frame_of for s in names):
+                ag = u.select_atoms(selection)
+                for s in names:
+                    u.trajectory[frame_of[s]]
+                    if align:
+                        mda.analysis.align.alignto(u, ref, select=align_sel, match_atoms=False)
+                    yield ag
+                return
+        for s in names:
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore')
+                u = mda.Universe(self.structure_directory + s)
+            if align:
+                mda.analysis.align.alignto(u, ref, select=align_sel, match_atoms=False)
+            yield u.select_atoms(selection)
+
+    def write(self, structures, output, selection='all', align=True, index=True):
+        """
+        Write a set of structures, superposed on the ensemble reference frame.
+
+        structures : anything that picks rows of ens.df (DataFrame from select/nearest/
+            representatives/query, a boolean mask, a Series from nlargest, a list of names).
+        output :
+            ``name.xtc`` (or .dcd/.trr)  →  name.xtc + name.pdb (topology) + name_index.csv
+            ``name.pdb``                 →  one multi-model PDB (+ name_index.csv)
+            ``some_dir/`` (no extension) →  one PDB per structure, original file names
+                                            (+ some_dir/index.csv)
+        selection : MDAnalysis selection of atoms to write (default all; e.g. 'protein and name CA').
+        align : False writes the raw AF2 coordinates.
+        index : write the CSV mapping frame → structure, with all ens.df columns.
+
+        Returns the path written (the trajectory, the PDB or the directory).
+        """
+        import warnings
+        names = self._names(structures)
+        if not names:
+            raise ValueError('no structures selected')
+        root, ext = os.path.splitext(output.rstrip('/'))
+        ext = ext.lower()
+        rows = self.df.loc[names].copy()
+        rows.insert(0, 'frame', range(len(names)))
+
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            if ext == '':
+                os.makedirs(output, exist_ok=True)
+                for s, ag in zip(names, self._iter_aligned(names, selection, align)):
+                    ag.write(os.path.join(output, s))
+                written, index_path = output, os.path.join(output, 'index.csv')
+            else:
+                frames = self._iter_aligned(names, selection, align)
+                first = next(frames)
+                n_atoms = first.n_atoms
+                if ext != '.pdb':
+                    first.write(root + '.pdb')
+                kw = {'multiframe': True} if ext == '.pdb' else {}
+                with mda.Writer(output, n_atoms, **kw) as w:
+                    w.write(first)
+                    for ag in frames:
+                        w.write(ag)
+                written, index_path = output, root + '_index.csv'
+        if index:
+            rows.to_csv(index_path)
+        print(f'Wrote {len(names)} structures → {os.path.abspath(written)}'
+              + (f' (topology {root}.pdb)' if ext not in ('', '.pdb') else ''))
+        return written
 
     # ── Matrices ──────────────────────────────────────────────────────────────
 

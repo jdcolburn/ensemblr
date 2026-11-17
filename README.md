@@ -113,12 +113,44 @@ These are not Python packages, so pip can't install them. Install the ones you n
 ## Usage
 
 1. Generate an ensemble: `ensemblr-generate --dry-run`, then `ensemblr-generate`, from a directory
-   containing `input.fasta`. See `GENERATE_AF2_ENSEMBLE_V2.md` for options.
+   containing `input.fasta`. See `GENERATE_AF2_ENSEMBLE_V2.md` for options. At the end of a run the
+   generator also writes `structures.xtc` (every accepted model as one trajectory, superposed on the
+   PCA selection), its topology `structures.pdb`, and `structures_index.csv` (frame → file, round,
+   depth, cell, pLDDT): `vmd structures.pdb structures.xtc`. For a run made before this, run
+   `ensemblr-xtc <output_dir>`.
 2. Analyse it and set up umbrella sampling in a notebook: copy one of the example notebooks, edit the
    settings at the top, and run it top to bottom. `example_notebook_1d_clean.ipynb` (also installed as
    `ensemblr/templates/umbrella_sampling_1d_template.ipynb`) is the 1D path;
    `example_notebook_2d_grid_clean.ipynb` (also installed as
    `ensemblr/templates/umbrella_sampling_2d_grid_template.ipynb`) is the 2D grid.
+
+### Getting at the structures
+
+`ens.df` has one row per structure (indexed by file name) with pLDDT, `PC1…PCn`, `cluster` and any
+metrics. Pick rows any way you like, then write or locate them:
+
+```python
+from ensemblr import Ensemble
+ens = Ensemble.from_run('synthetic_ensemble/run_01')   # reopen a notebook run (no recomputation)
+
+hi = ens.df.nlargest(20, 'PC1')                        # plain pandas works
+box = ens.select(PC1=(10, None), PC2=(-2, 2))          # ranges; None = open end
+near = ens.nearest(PC1=5.0, PC2=-1.0, n=5)             # closest to a point (adds 'distance')
+bins = ens.representatives('PC1', n_bins=12)           # one structure per PC1 bin
+reps = ens.representatives('cluster')                  # one per cluster (closest to centroid)
+
+ens.write(hi, 'pc1_high.xtc')     # pc1_high.xtc + .pdb topology + _index.csv, superposed
+ens.write(reps, 'reps.pdb')       # one multi-model PDB
+ens.write(near, 'near_dir/')      # one PDB per structure
+ens.paths(box)                    # absolute PDB paths
+```
+
+For your own clustering, add a label column and reuse the same calls:
+`ens.df['km'] = KMeans(5).fit_predict(ens.df[['PC1', 'PC2']]); ens.representatives('km')`.
+`write()` reads frames from the run's `structures.xtc` when it exists (much faster than opening
+thousands of symlinked PDBs on NFS). `ens.universe` is the whole ensemble as one aligned
+MDAnalysis Universe, frame *i* = row *i* of `ens.df`. `ens.save(run_dir)` saves an analysis for
+`from_run`.
 
 ---
 

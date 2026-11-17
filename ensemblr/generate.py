@@ -91,6 +91,8 @@ Fill mode (optional, post-hoc)
 Output structure
 ----------------
   <output_dir>/structures/    — symlinks to all accepted PDBs
+  <output_dir>/structures.xtc — all accepted structures as one aligned trajectory
+                                (+ structures.pdb topology, structures_index.csv frame → file)
   <output_dir>/rounds/        — raw ColabFold output per round/cell
   <output_dir>/rounds/fill/   — raw ColabFold output per --fill target
   <output_dir>/pca_state.npz  — PCA model + grid edges (restart state)
@@ -363,9 +365,40 @@ def run_colabfold(msa_dir, output_dir, msa_depth, n_seeds, n_models,
 
     log_path = os.path.join(output_dir, 'colabfold.log')
     with open(log_path, 'w') as log_f:
-        subprocess.run(cmd, env=_colabfold_env(), check=True,
-                       stdout=log_f, stderr=subprocess.STDOUT)
+        proc = subprocess.run(cmd, env=_colabfold_env(),
+                              stdout=log_f, stderr=subprocess.STDOUT)
+    if proc.returncode != 0:
+        raise RuntimeError(_colabfold_failure_message(
+            proc.returncode, msa_depth, n_seeds, log_path))
     return output_dir
+
+
+def _colabfold_failure_message(returncode, msa_depth, n_seeds, log_path):
+    """Explain a failed colabfold_batch run, with the end of its log."""
+    try:
+        with open(log_path) as f:
+            tail = ''.join(f.readlines()[-15:])
+    except OSError:
+        tail = '(log unreadable)'
+    msg = (f'colabfold_batch failed at --max-msa {msa_depth} '
+           f'({n_seeds} seeds), exit code {returncode}.\n'
+           f'Log: {os.path.abspath(log_path)}\n')
+    if returncode == -9:
+        msg += (
+            'It was killed with SIGKILL, almost always because the host ran out '
+            'of RAM (kernel OOM killer, or the Slurm --mem limit). Deep MSAs use '
+            'the most memory. Options:\n'
+            '  * check: sacct -j <jobid> -o JobID,State,MaxRSS,ReqMem '
+            '(State OUT_OF_MEMORY), or journalctl -k | grep -i oom\n'
+            '  * request more memory, or use a less busy node\n'
+            f'  * cap the depth sweep below this depth, e.g. --msa-ceiling '
+            f'{max(2, int(msa_depth.split(":")[0]) // 2)}\n'
+            '  * check the log shows JAX on the GPU (a CPU fallback needs far more RAM)\n'
+            'Rerun with the same output directory to resume; finished depths '
+            'are skipped.\n')
+    elif returncode < 0:
+        msg += f'It was killed by signal {-returncode} (time limit or scancel?).\n'
+    return msg + f'--- last lines of log ---\n{tail}'
 
 
 # ── Score-metric helpers ──────────────────────────────────────────────────────
@@ -1976,9 +2009,20 @@ def run_adaptive_ensemble_v2(
     # ── Final output ──────────────────────────────────────────────────────────
     _write_plddt_dict(plddt_json_path, plddt_dict)
     total = len(plddt_dict)
+    xtc_line = ''
+    if not dry_run and total > 0:
+        try:
+            from .trajectory import write_structures_xtc
+            n_frames = write_structures_xtc(output_dir, quiet=True)
+            xtc_line = (f'  structures.xtc  →  {os.path.join(output_dir, "structures.xtc")}'
+                        f'  ({n_frames} frames, aligned; topology structures.pdb)')
+        except Exception as exc:  # never fail a finished run over the trajectory
+            xtc_line = f'  structures.xtc  →  not written ({exc}); run ensemblr-xtc {output_dir}'
     print(f'\n{"━"*66}')
     print(f'  Done: {total} accepted structures')
     print(f'  structures/     →  {structures_dir}')
+    if xtc_line:
+        print(xtc_line)
     print(f'  stats.json      →  {stats_path}')
     print(f'  plddt_dict.json →  {plddt_json_path}')
     print(f'{"━"*66}')

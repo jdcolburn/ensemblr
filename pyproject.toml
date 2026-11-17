@@ -37,6 +37,7 @@ dependencies = [
 
 [project.scripts]
 ensemblr-generate = "ensemblr.generate:main"
+ensemblr-xtc = "ensemblr.trajectory:main"
 
 [project.optional-dependencies]
 notebook = [
