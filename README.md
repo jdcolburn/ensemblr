@@ -123,6 +123,9 @@ These are not Python packages, so pip can't install them. Install the ones you n
    `ensemblr/templates/umbrella_sampling_1d_template.ipynb`) is the 1D path;
    `example_notebook_2d_grid_clean.ipynb` (also installed as
    `ensemblr/templates/umbrella_sampling_2d_grid_template.ipynb`) is the 2D grid.
+3. To explore an ensemble your own way (pick structures by PC value or cluster, write them out, add your
+   own per-structure properties or clustering), start from `example_notebook_explore.ipynb` (also
+   installed as `ensemblr/templates/explore_ensemble_template.ipynb`): set `ENSEMBLE_DIR` and run it.
 
 ### Getting at the structures
 

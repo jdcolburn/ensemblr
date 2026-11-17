@@ -27,8 +27,9 @@ def test_public_api():
 
 
 def test_template_notebook_installed():
-    template = resources.files('ensemblr') / 'templates' / 'umbrella_sampling_2d_grid_template.ipynb'
-    assert template.is_file()
+    for name in ('umbrella_sampling_2d_grid_template.ipynb', 'umbrella_sampling_1d_template.ipynb',
+                 'explore_ensemble_template.ipynb'):
+        assert (resources.files('ensemblr') / 'templates' / name).is_file(), name
 
 
 def test_generate_cli_help():
